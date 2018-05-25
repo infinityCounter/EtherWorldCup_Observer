@@ -1,0 +1,742 @@
+/** Globally installed Dependencies */
+const fs = require('fs');
+
+/** Locally installed Dependencies */
+const winston = require('winston');
+
+/** Local Modules*/
+const logger          = require('./lib/logging/logger.js');
+const footballData    = require('./lib/football-data/football.js');
+const { Broker }      = require('./lib/web3/broker.js');
+const { PgClient }    = require('./lib/database/postgres.js');
+const { RedisClient } = require('./lib/database/redis.js');
+
+/** Configuration files */
+let brokerConfig   = require('../config/broker.js');
+let walletConfig   = require('../config/wallet.js');
+let postgresConfig = require('../config/postgres.js');
+let redisConfig    = require('../config/redis.js');
+
+const REDIS_TEAMS_PULLED                                 = 'teamsPulled';
+const REDIS_LAST_BET_PLACED_BLOCK                        = 'lastBetPlacedBlock';
+const REDIS_LAST_BET_CANCELLED_BLOCK                     = 'lastBetCancelledBlock';
+
+let postgres = new PgClient(postgresConfig);
+let redis    = new RedisClient(redisConfig.host, redisConfig.port);
+let broker   = new Broker(brokerConfig.WSEndpoint,
+    brokerConfig.HTTPEndpoint,
+    brokerConfig.ABI,
+    brokerConfig.ContractAddess,
+    brokerConfig.StartBlockHeight,
+    walletConfig.Coinbase,
+    walletConfig.Mnemonic);
+
+const shutdown = function (status = 0) {
+    logger.log('observer', 'info', 'Shutting down observer....Cleaning up connections');
+    redis.cleanup();
+    postgres.die().then(() => {
+        process.exit(status);
+    })
+    .catch((err) => {
+        logger.log('postgres', 'info', 'Postgres failed to exit cleanly ', {
+            error: err
+        });
+        process.exit(1);
+    });
+};
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+const panic = function (action, panicInfo) {
+    logger.log(action, 'error', "Panic has occured, killing observer daemon: ", panicInfo);
+    logger.log('observer', 'error', `Panic caused by action ${action}`);
+    shutdown(1);
+};
+
+const initRedisKeys = function() {
+    let promises = [];
+    // Init teams pulled
+    promises.push(new Promise((resolve, reject) => {
+        redis.client.get(REDIS_TEAM_PULLED, function(err, resp) {
+            if (err != null) {
+                reject(err);
+            } else {
+                if (resp == null) {
+                    resp = false;
+                    redis.setKey(REDIS_TEAMS_PULLED, resp);
+                }
+                resolve(resp);
+            }
+        });
+    }));
+    promises.push(new Promise((resolve, reject) => {
+        redis.client.get(REDIS_LAST_BET_PLACED_BLOCK, function(err, resp) {
+            if (err != null) {
+                reject(err);
+            } else {
+                if (resp == null) {
+                    resp = brokerConfig.StartBlockHeight;
+                    redis.setKey(REDIS_LAST_BET_PLACED_BLOCK, resp);
+                }
+                resolve(resp);
+            }
+        });
+    }));
+    promises.push(new Promise((resolve, reject) => {
+        redis.client.get(REDIS_LAST_BET_CANCELLED_BLOCK, function(err, resp) {
+            if (err != null) {
+                reject(err);
+            } else {
+                if (resp == null) {
+                    resp = brokerConfig.StartBlockHeight;
+                    redis.setKey(REDIS_LAST_BET_CANCELLED_BLOCK, resp);
+                }
+                resolve(resp);
+            }
+        });
+    }));
+    return Promise.all(promises);
+}
+
+const cacheMatchInRedis = function(match, fixture) {
+    const matchKey = `matches:${match.Id}`
+    return new Promise((resolve, reject) => {
+        redis.client.del(matchKey, function(err) {
+            if (err == null) {
+                redis.client.sadd(matchKey, JSON.stringify(match), JSON.stringify(fixture), (err, result) => {
+                    if (err != null) {
+                        reject(err);
+                    } else {
+                        resolve(result);
+                    }
+                });
+            } else {
+                reject(err);
+            }
+        });
+    });
+}
+
+const getMatchFixture = async function(fixtureId) {
+    const resp = await footballData.getFixtureAsync(fixtureId);
+    return parseFixture(resp);
+}
+
+const updateAllMatches = async function() {
+    const num = await broker.getNumMatches();
+    const matches = await Promise.all([...Array(parseInt(num))].map((_, idx) =>{
+        broker.getMatch(matchId),
+        broker.getMatchBettingDetails(matchId)
+    }));
+    let parsedMatches = matches.map((idx, matchData) => {
+        return broker.parseMatch(idx, matchData);
+    });
+    postgres.matches.push(...parsedMatches);
+    await postgres.saveMatches();
+    let promises = [];
+    for(let count = 0; count < parsedMatches.length; count++) {
+        const match = parsedMatches[count];
+        const fixture = await getMatchFixture(match.FixtureId);
+        promises.push(cacheMatchInRedis(match, fixture));
+    }
+    return Promise.all(promises);
+}
+
+const updateFixturesCache = async function() {
+    let matches = await postgres.getMatches();
+    let fixtures = await Promise.all(matches.map((match) => getMatchFixture(match.FixtureId)));
+    await Promise.all(fixtures.map((fixture, idx) => cacheMatchInRedis(matches[idx], fixture)));
+}
+
+//Id: matchId,
+// Name: matchData[0][0],
+// ExtId: parseInt(matchData[0][1]),
+// HomeTeam: parseInt(matchData[0][2]),
+// AwayTeam: parseInt(matchData[0][3]),
+// Winner: parseInt(matchData[0][4]),
+// StartTime: new Date(parseInt(matchData[0][5]) * 1000),
+// CloseTime: new Date(parseInt(matchData[1][0]) * 1000),
+// TotalTeamABets: this.weiToEth(matchData[1][1]),
+// TotalTeamBBets: this.weiToEth(matchData[1][2]),
+// TotalDrawBets: this.weiToEth(matchData[1][3]),
+// Cancelled: matchData[0][6],
+// Locked: matchData[0][7]
+
+const main = function () {
+
+    let isFullyLoaded = false;
+    let pendingBetCreations = [];
+    let pendingBetCancellations = [];
+    let pendingMatchUpdates = [];
+
+    const generalMatchEventListener = function (err, result) {
+        if (err == null) {
+            const matchId = parseInt(result.returnValues.matchId);
+            let promise = Promise.all([
+                broker.getMatch(matchId),
+                broker.getMatchBettingDetails(matchId)
+            ]);
+
+            // If all matches are gotten successfully
+            promise.then(matchData => {
+                if (isFullyLoaded) {
+                    return postgres.matches.push(broker.parseMatch(matchId, matchData));
+                }
+                return pendingMatchUpdates.push(broker.parseMatch(matchId, matchData));
+            })
+            .catch(err => {
+                logger.log('web3', 'error', `Error, unable to get match data for match ${matchId}`, {
+                    error: err
+                });
+            })
+
+            // Returned the number of elements but we don't want that
+            .then((_) => {
+                return postgres.save();
+            })
+            .then(function () {
+                logger.log('web3', 'info', `Saved match data for match ${matchId}`);
+            })
+            .catch(err => {
+                logger.log('web3', 'error', 'Unable to persist to postgres');
+            });
+        } else {
+            logger.log('web3', 'error', 'Error occured in web3 event handler', {
+                error: err
+            });
+        }
+    };
+
+    broker.addMatchCreatedEventListener(generalMatchEventListener)
+    broker.addMatchCancelledEventListener(generalMatchEventListener)
+    broker.addMatchFailedAttemptedPayoutReleaseEventListener(generalMatchEventListener)
+    broker.addMatchFailedPayoutReleaseEventListener(generalMatchEventListener)
+    broker.addMatchOverEventListener(generalMatchEventListener)
+
+
+    /** LOAD TEAMS FROM CONTRACT */
+
+    let teamsPromise = new Promise((resolve, reject) => {
+        redis.client.get(REDIS_TEAMS_PULLED, function (err, resp) {
+            if (resp == 'false') {
+                Promise.all([...Array(32)].map((_, idx) => {
+                    return broker.getTeam(idx);
+                }))
+                .then((teamArray) => {
+                    teamArray.map((team, idx) => {
+                        postgres.teams[idx] = {
+                            Id: idx,
+                            Name: team
+                        }
+                    });
+                    postgres.save().then(() => {
+                        redis.setKey(REDIS_TEAMS_PULLED, true);
+                        resolve();
+                    }).catch(() => {
+                        logger.log('postgres', 'error', 'Failed to save team updates to postgres!', {
+                            error: err
+                        });
+                        reject(err);
+                    });
+                })
+                .catch((err) => {
+                    panic('web3', "Can't get teams to set in db.....failing gonna panic", {
+                        error: err
+                    });
+                    reject(err)
+                });
+            } else {
+                resolve();
+            }
+        });
+
+    });
+
+    // This resolves and catches getting all teams;
+    teamsPromise.then(() => {
+        return broker.getNumMatches();
+    })
+    .catch(() => { })
+
+
+
+    .then(async function (numMatches) {
+        let emptyArr = [...Array(parseInt(numMatches))];
+        let rawMatchData = await Promise.all([
+            Promise.all(emptyArr.map((_, idx) => broker.getMatch(idx))),
+            Promise.all(emptyArr.map((_, idx) => broker.getMatchBettingDetails(idx)))
+        ]);
+            // [ [ {}] , [{}]]
+            // [{}, {}]
+        rawMatchData[0].forEach(function (_, idx) {
+            postgres.matches.push(broker.parseMatch(idx, [rawMatchData[0][idx], rawMatchData[1][idx]]));
+        });
+        postgres.save().then(() => {
+            
+        })
+        .catch((err) => {
+            logger.log('postgres', 'error', 'Failed to save match updates to postgres!', {
+                error: err
+            });
+        });
+    })
+    .catch(function (err) {
+        logger.log('web3',
+            'error',
+            `Failed to get match data from contract ${broker.contractAddress}! `, {
+                error: err
+            });
+    })
+    .then(() => {
+        return new Promise((resolve, reject) => {
+            redis.client.get(REDIS_LAST_BET_PLACED_BLOCK, function (err, resp) {
+                    if (resp == null) {
+                        resp = 0;
+                        logger.log('redis', 'info', `${REDIS_LAST_BET_PLACED_BLOCK} key was not set in Redis, initing to false!`);
+                        redis.setKey(REDIS_LAST_BET_PLACED_BLOCK, resp);
+                    }
+                    // pull from every block after the last one
+                    sinceBlock = parseInt(resp) + 1;
+                    console.log("Since: ", sinceBlock)
+                    broker.getBetPlacedEvents(sinceBlock, function (err, resultArr) {
+                        console.log(resultArr)
+                        if (err != null) {
+                            logger.log('web3', 'error', `Failed to get bet placed events since block: ${sinceBlock}`, {
+                                error: err
+                            });
+                            reject(err);
+                        } else {
+                            let lastBlock = sinceBlock;
+                            resultArr.map((betEvent, idx) => {
+                                postgres.unpersistedBets.push(web3ParseBetPlacedEvent(betEvent));
+                                lastBlock = betEvent.blockNumber;
+                            });
+                            postgres.save().then(() => {
+                                redis.setKey(REDIS_LAST_BET_PLACED_BLOCK, lastBlock);
+                                resolve();
+                            }).catch((err) => {
+                                logger.log('postgres', 'error', 'Failed to save updates to postgres!', {
+                                    error: err
+                                });
+                                reject(err)
+                            });
+                            broker.addBetPlacedEventListener(function (err, betEvent) {
+                                console.log(betEvent)
+                                if (err == null) {
+                                    postgres.unpersistedBets.push(web3ParseBetPlacedEvent(betEvent));
+                                    postgres.save().then(() => {
+                                        redis.setKey(REDIS_LAST_BET_PLACED_BLOCK, betEvent.blockNumber);
+                                    }).catch((err) => {
+                                        logger.log('postgres', 'error', 'Failed to save updates to postgres!', {
+                                            error: err
+                                        });
+                                    });
+                                } else {
+                                    logger.log('web3', 'error', 'Error occured in broker bet placed event listener', {
+                                        error: err
+                                    });
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+        })
+        .catch(() => { })
+        .then(() => {
+            redis.client.get(REDIS_LAST_BET_CANCELLED_BLOCK, function (err, resp) {
+                if (resp == null) {
+                    resp = 0;
+                    logger.log('redis', 'info', `${REDIS_LAST_BET_CANCELLED_BLOCK} key was not set in Redis, initing to false!`);
+                    redis.setKey(REDIS_LAST_BET_CANCELLED_BLOCK, resp);
+                }
+                // pull from every block after the last one
+                sinceBlock = parseInt(resp) + 1;
+                broker.getBetCancelledEvents(sinceBlock, function (err, resultArr) {
+                    if (err != null) {
+                        logger.log('web3', 'error', `Failed to get bet cancelled events since block: ${sinceBlock}`, {
+                            error: err
+                        });
+                    } else {
+                        let lastBlock = sinceBlock;
+                        resultArr.map((cancelEvent, idx) => {
+                            const matchId = parseInt(cancelEvent.returnValues.matchId);
+                            const betId = parseInt(cancelEvent.returnValues.betId);
+                            postgres.cancelledBets.push([matchId, betId]);
+                            lastBlock = cancelEvent.blockNumber;
+                        });
+                        postgres.save().then(() => {
+                            redis.setKey(REDIS_LAST_BET_CANCELLED_BLOCK, lastBlock);
+                        }).catch((err) => {
+                            console.log(err)
+                            logger.log('postgres', 'error', 'Failed to save updates to postgres!', {
+                                error: err
+                            });
+                        });
+                        broker.addBetCancelledEventListener(function (err, cancelEvent) {
+                            if (err == null) {
+                                postgres.cancelledBets.push([cancelEvent.returnValues.matchId, cancelEvent.returnValues.betId]);
+                                postgres.save().then(() => {
+                                    redis.setKey(REDIS_LAST_BET_CANCELLED_BLOCK, cancelEvent.blockNumber);
+                                }).catch(() => {
+                                    logger.log('postgres', 'error', 'Failed to save updates to postgres!', {
+                                        error: err
+                                    });
+                                });
+                            } else {
+                                logger.log('web3', 'error', 'Error occured in broker bet cancelled event listener', {
+                                    error: err
+                                });
+                            }
+                        });
+                    }
+                });
+            })
+        })
+};
+
+const init = Promise.all([
+    postgres.setup(false),
+    redis.setup(),
+    broker.setup()
+]);
+
+init.catch((err) => {
+    panic('observer', {
+        error: err
+    });
+})
+.then(() => initRedisKeys)
+.catch((err) => {
+    logger.log('redis', 'error', 'Unable to set redis keys', {
+        error: err
+    });
+})
+.then(main)
+
+
+    // Load all matches from the contract every time the server starts.
+    // The reasoning behind this is that since that it doesn't make sense
+    // to use events and go through all create events then cancel events
+    // since this could be summarized by just pulling all matches
+    // there should never be an exponentially large number of matches either
+
+    // YO READ THIS MAKE SURE YOU DO
+    // IN OBSERVER EVERY TIME A BET IS PLACED OR CANCELLED
+    // HAVE SOME UPDATE FUNCTION IN POSTGRES AND JUST UPDATE THE MATCH TOTALS
+function parseCompetition(raw) {
+    return JSON.parse(raw);
+}
+
+function parseFixtures(raw) {
+    let fixtures = {};
+    const arrFixtures = JSON.parse(raw).fixtures;
+    arrFixtures.map(function (fixture) {
+        const id = fixture._links.self.href.split('/').pop();
+        fixtures[id] = fixture;
+    });
+    return fixtures;
+}
+
+function parseFixture(raw) {
+    return JSON.parse(raw).fixture;
+}
+
+function parseLeagueTable(raw) {
+    return JSON.parse(raw);
+}
+
+function parseTeams(raw) {
+    return JSON.parse(raw).teams;
+}
+
+function parsePlayers(raw) {
+    return JSON.parse(raw).players;
+}
+
+
+
+// class Cache {
+
+//     constructor() {
+//         this.Broker = new Broker();
+//         this.PgClient = new PgClient();
+
+//         // Init db clients and load the stuff from the db
+//         this.PgClient.setup().then(() => {}).catch(console.log);
+
+//         //set math event listener
+//         let matchCreateListener = function(error, result) {
+//             if (!error) {
+//                 const prom = Promise.all([
+//                     this.Broker.getMatch(result.returnValues.matchId),
+//                     this.Broker.getMatchBettingDetails(result.returnValues.matchId)
+//                 ]).then(function(error, matchDetails) {
+//                     console.log(this.PgClient.matches.push({
+//                         Id: result.returnValues.matchId,
+//                         ExtId: matchDetails[0][1],
+//                         HomeTeam: matchDetails[0][2],
+//                         AwayTeam: matchDetails[0][3],
+//                         Winner: matchDetails[0][4],
+//                         StartTime: matchDetails[0][5],
+//                         CloseTime: matchDetails[1][0],
+//                         TotalTeamABets: matchDetails[1][1],
+//                         TotalTeamBBets: matchDetails[1][2],
+//                         TotalDrawBets: matchDetails[1][3],
+//                         Cancelled: matchDetails[0][6],
+//                         Locked: match[0][7]
+//                     }));
+//                    console.log(this.PgClient.matches);
+//                 }).catch(console.log);
+//             }
+//         };
+
+//         matchCreateListener = matchCreateListener.bind(this);
+
+//         this.Broker.addMatchCreatedEventListener(matchCreateListener);
+
+//         // this.Broker.placeBet(1, 3, 0.1);
+
+//         // this.Broker.addMatchCancelledEventListener(function(error, result) {
+//         //     if (!error) {
+//         //         this.PgClient.matches = this.PgClient.matches.map(function(match) {
+//         //             if (match.Id == result.args.matchId) {
+//         //                 match.Locked = true;
+//         //                 match.Cancelled = true;
+//         //             }
+//         //             return match;
+//         //         });
+//         //     }
+//         // });
+
+//         // this.Broker.addMatchOverEventListener(function(error, result) {
+//         //     console.log("Problemo:", error);
+//         //     console.log("NO PROBLEMO:", result);
+//         //     if (!error) {
+//         //         const prom = Promise.all([
+//         //             this.Broker.getMatch(result.args.matchId),
+//         //             this.Broker.getMatchBettingDetails(result.args.matchId)
+//         //         ]).then(function(matchDetails) {
+//         //             this.PgClient.matches = this.PgClient.matches.map(function(match) {
+//         //                 if (match.Id == result.args.matchId) {
+//         //                     match.Winner = matchDetails[0][4];
+//         //                     match.TotalTeamABets = matchDetails[1][1];
+//         //                     match.TotalTeamBBets = matchDetails[1][2];
+//         //                     match.TotalDrawBets = matchDetails[1][3];
+//         //                     match.Locked = true;
+//         //                     match.Cancelled = true;
+//         //                 }
+//         //                 return match;
+//         //             });
+//         //         }).catch(function(x) {});
+//         //     }
+//         // });
+
+//         // this.Broker.addMatchFailedAttemptedPayoutReleaseEventListener(function(error, result) {
+//         //     console.log("Problemo:", error);
+//         //     console.log("NO PROBLEMO:", result);
+//         //     if (!error) {
+//         //         this.PgClient.matches = this.PgClient.matches.map(function(match) {
+//         //             if (match.Id == result.args.matchId) {
+//         //                 match.NumPayoutAttempts = result.args.numAttempts;
+//         //             }
+//         //             return match;
+//         //         });
+//         //     }
+//         // });
+
+//         // this.Broker.addMatchFailedPayoutReleaseEventListener(function(error, result) {
+//         //     console.log("Problemo:", error);
+//         //     console.log("NO PROBLEMO:", result);
+//         //     if (!error) {
+//         //         this.PgClient.matches = this.PgClient.matches.map(function(match) {
+//         //             if (match.Id == result.args.matchId) {
+//         //                 match.Locked = true;
+//         //             }
+//         //             return match;
+//         //         });
+//         //     }
+//         // });
+
+//         this.Broker.addBetPlacedEventListener(console.log);
+
+//         // this.Broker.addBetCancelledEventListener(function(error, result) {
+//         //     if (!error) {
+//         //         let bets = this.PgClient.bets.get(result.args.matchId);
+//         //         bets[result.args.betId].Cancelled = true;
+//         //         this.PgClient.modifyBets.push(bets[result.args.betId]);
+//         //         this.PgClient.bets.set(result.args.matchId, bets);
+//         //     }
+//         // });
+//     }
+
+//     /* getCompetition() {
+//     //     if (!this.InitializedCompetition) {
+//     //         const resp = footballData.getCompetition();
+//     //         this.Competition = parseCompetition(resp);
+//     //         this.InitializedCompetition = true;
+//     //         this.LastUpdated = Date.now();
+//     //     }
+//     //     return this.Competition;
+//     // }
+
+//     // getFixtures() {
+//     //     if(!this.InitializedFixtures) {
+//     //         const resp = footballData.getFixtures();
+//     //         this.Fixtures = parseFixtures(resp);
+//     //         this.InitializedFixtures = true;
+//     //         this.LastUpdated = Date.now();
+//     //     }
+//     //     return this.Fixtures;
+//     // }
+
+//     // getFixture(id) {
+//     //     let fixWanted = {};
+//     //     if(!this.InitializedFixtures) {
+//     //         const resp = footballData.getFixtures();
+//     //         const fixtures = JSON.parse(resp).fixtures;
+//     //         fixtures.map((fixture) => {
+//     //             const fixId = fixture._links.self.href.split('/').pop();
+//     //             this.Fixtures[fixId] = fixture;
+//     //             if (id == fixId) {
+//     //                 fixWanted = fixture;
+//     //             }
+//     //         });
+//     //         this.InitializedFixtures = true;
+//     //         this.LastUpdated = Date.now();
+//     //         return fixWanted;
+//     //     }
+//     //     if (this.Fixtures.hasOwnProperty(`${id}`)) {
+//     //         fixWanted = this.Fixtures[id];
+//     //     }
+//     //     return fixWanted;
+//     // }
+
+//     // getLeagueTable() {
+//     //     if(!this.InitializedLeagueTable) {
+//     //         const resp = footballData.getLeagueTable();
+//     //         this.LeagueTable = parseLeagueTable(resp);
+//     //         this.InitializedLeagueTable = true;
+//     //         this.LastUpdated = Date.now();
+//     //     }
+//     //     return this.LeagueTable;
+//     // }
+
+//     // getTeams() {
+//     //     if(!this.InitializedTeams) {
+//     //         const resp = footballData.getTeams();
+//     //         let teams = parseTeams(resp);
+//     //         teams.map((team) => {
+//     //             const linkArr = team._links.self.href.split("/");
+//     //             team.id = linkArr[linkArr.length - 1];
+//     //             const resp = footballData.getPlayers(team.id);
+//     //             team.players = parsePlayers(resp);
+//     //             this.Teams[team.id] = team;
+//     //         });
+//     //         this.InitializedTeams = true;
+//     //         this.LastUpdated = Date.now();
+//     //     }
+//     //     return this.Teams;
+//     // }
+
+//     // getTeam(id) {
+//     //     let teamWanted = {};
+//     //     if(!this.InitializedTeams) {
+//     //         const resp = footballData.getTeams();
+//     //         let teams = parseTeams(resp);
+//     //         teams.map((team) => {
+//     //             const linkArr = team._links.self.href.split("/");
+//     //             team.id = linkArr[linkArr.length() - 1];
+//     //             const resp = footballData.getPlayersAsync(team.id);
+//     //             team.players = parsePlayers(resp);
+//     //             this.Teams[team.id] = team;
+//     //             if (id == team.id) {
+//     //                 teamWanted = team;
+//     //             }
+//     //             return teamWanted;
+//     //         });
+//     //         this.InitializedTeams = true;
+//     //         this.LastUpdated = Date.now();
+//     //     }
+//     //     if (this.Teams.hasOwnProperty(`${id}`)) {
+//     //         teamWanted = this.Teams[id];
+//     //     }
+//     //     return teamWanted;
+//     // }
+
+//     // getLastUpdate() { return this.LastUpdated }
+
+//     // Initialize() {
+//     //     this.getCompetition();
+//     //     this.getFixtures();
+//     //     this.getLeagueTable();
+//     //     this.getTeams();
+//     // }
+
+//     // UpdateCompetition() {
+//     //     footballData.getCompetitionAsync()
+//     //         .then(resp => {
+//     //             this.Competition = parseCompetition(resp.data);
+//     //             this.InitializedCompetition = true;
+//     //             this.LastUpdated = Date.now();
+//     //         }).catch(() => {});
+//     // }
+
+//     // UpdateFixtures() {
+//     //     footballData.getFixturesAsync()
+//     //         .then(resp => {
+//     //             this.Fixtures = parseFixtures(resp.data);
+//     //             this.InitializedFixtures = true;
+//     //             this.LastUpdated = Date.now();
+//     //         }).catch(() => {});
+//     // }
+
+//     // UpdateLeagueTable() {
+//     //     footballData.getLeagueTableAsync()
+//     //         .then(resp => {
+//     //             this.LeagueTable = parseLeagueTable(resp.data);
+//     //             this.InitializedLeagueTable = true;
+//     //             this.LastUpdated = Date.now();
+//     //         }).catch(() => {});
+//     // }
+
+//     // UpdateTeams() {
+//     //     footballData.getTeamsAsync()
+//     //         .then(resp => {
+//     //             let teams = parseTeams(resp);
+//     //             this.Teams = {};
+//     //             teams.map((team) => {
+//     //                 const linkArr = team._links.self.href.split("/");
+//     //                 team.id = linkArr[linkArr.length() - 1];
+//     //                 const resp = footballData.getPlayers(team.id);
+//     //                 team.players = parsePlayers(resp.data);
+//     //                 this.Teams[team.id] = team;
+//     //             });
+//     //             this.InitializedTeams = true;
+//     //             this.LastUpdated = Date.now();
+//     //         }).catch(() => {});
+//     // }
+
+//     // Update() {
+//     //     this.UpdateCompetition();
+//     //     this.UpdateFixtures();
+//     //     this.UpdateLeagueTable();
+//     //     this.UpdateTeams();
+//     // }
+//     */
+// }
+
+// module.exports.Cache = Cache;
+
+// // cache.Initialize();
+
+// const refreshDelay = 200000; 
+// // This loop will refresh the cache every 2 minutes
+// (function(cache) {
+//     setTimeout(function loop(){
+//         // update the cache
+//         cache.Update();
+//         setTimeout(loop, refreshDelay);
+//     }, refreshDelay);
+// })(cache);
