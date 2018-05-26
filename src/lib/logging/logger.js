@@ -5,11 +5,7 @@ const winston      = require('winston');
 
 const isProductionEnv = (process.env.ENVIRONMENT == 'production');
 
-let LOG_ROOT = process.env.OBSERVER_LOGS || "/var/logs/observer";
-if (!isProductionEnv) {
-    // If not in production just set the log directory to the project_root/logs
-    LOG_ROOT = path.resolve(__dirname + "/../../../logs"); 
-}
+let LOG_ROOT = process.env.OBSERVER_LOGS || "/var/logs/ewc/observer";
 
 const actions = ['postgres', 'redis', 'http', 'web3', 'observer'];
 let logDirs   = {};
