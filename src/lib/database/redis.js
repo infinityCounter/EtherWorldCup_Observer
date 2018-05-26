@@ -201,7 +201,6 @@ class RedisClient {
                 if(!util.isArray(commandSet)) {
                     reject("Command Set must be an array");
                 }
-                console.log(commandSet)
                 let command = commandSet[0];
                 if(commandSet.length > 1) {
                     let args = commandSet.slice(1);

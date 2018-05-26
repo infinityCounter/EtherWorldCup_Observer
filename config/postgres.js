@@ -1,9 +1,9 @@
 module.exports = {
-    Username: 'daniel',
-    Password: 'testing',
-    Host: '127.0.0.1',
-    Port: '5432',
-    Database: 'ether_wc_2018',
+    Username: process.env.DbUsername,
+    Password: process.env.DbPassword,
+    Host: process.env.DbHost,
+    Port: process.env.DbPort,
+    Database: process.env.DbName,
     MaxPool: 25,
     ConnectionString: function() {
         return `postgres://${this.Username}:${this.Password}@${this.Host}:${this.Port}/${this.Database}`;

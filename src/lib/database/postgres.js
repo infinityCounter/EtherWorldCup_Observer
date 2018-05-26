@@ -8,9 +8,8 @@ class PgClient {
     constructor(config) {
         this.config          = config;
         // Don't persist data in the client
-        // Just use these to temporarily cache data for the 10 seconds
-        // then clear
-        // move what's important into cache for quick usage
+        // Just use these to temporarily cache data until a save then clear
+        // move what's important into cache for quick access
         this.teams              = [];
         this.matches            = [];
         this.unpersistedBets    = [];
@@ -201,10 +200,12 @@ class PgClient {
     }
 
     async saveMatches() {
+        logger.log('postgres', 'info', 'Attempting to save matches');
         await this.models.Match.sequelize.transaction((t) =>{
             return this.models.Match.bulkUpsert(this.matches, {transaction: t});
         });
         this.matches = [];
+        logger.log('postgres', 'info', 'Saved matches');
     }
 
     async getTeams() {
@@ -212,10 +213,12 @@ class PgClient {
     }
 
     async saveTeams() {
+        logger.log('postgres', 'info', 'Attempting to save teams');
         await this.models.Team.sequelize.transaction((t) => {
             return this.models.Team.bulkUpsert(this.teams, {transaction: t});
         });
         this.teams = [];
+        logger.log('postgres', 'info', 'Saved teams');
     }
 
     async getActiveBets() {
@@ -234,12 +237,13 @@ class PgClient {
         let params = [];
         let counter = 1;
         bets.map((bet, idx) => {
-            params.push(`(match_id=$${counter++} AND id=$${counter++})`);
+            params.push(`("matchId"=$${counter++} AND id=$${counter++})`);
         })
         return `UPDATE bets SET cancelled = true WHERE (${params.join(" OR ")});`;
     }
 
     async saveBets() {
+        logger.log('postgres', 'info', 'Attempting to save bets');
         await this.models.Bet.sequelize.transaction((t) => {
             let promiseArr = [];
             // Create new bets
@@ -253,9 +257,6 @@ class PgClient {
             }
             // Cancel any bets that should be cancelled
             if (this.cancelledBets.length > 0) {
-                console.log(this.cancelledBets)
-                console.log(this.bulkCancelBetsBuildQuery(this.cancelledBets))
-                console.log([].concat(...this.cancelledBets));
                 promiseArr.push(
                     this.db.query(
                         this.bulkCancelBetsBuildQuery(this.cancelledBets), { 
@@ -271,6 +272,7 @@ class PgClient {
         });
         this.unpersistedBets = [];
         this.cancelledBets = [];
+        logger.log('postgres', 'info', 'Saved bets');
     }
 
     async save() {

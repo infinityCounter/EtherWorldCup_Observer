@@ -1,6 +1,4 @@
 const Web3             = require('web3');
-const ganache          = require("ganache-cli");
-const HDWalletProvider = require("truffle-hdwallet-provider");
 
 const logger = require('../logging/logger.js');
 
@@ -8,14 +6,13 @@ let brokerInstance = 0;
 
 class Broker {
 
-    constructor(wsEndpoint, httpEndpoint, abi, contractAddr, startBlock, coinbase, mnemonic) {
+    constructor(wsEndpoint, httpEndpoint, abi, contractAddr, startBlock, coinbase) {
       this.instance = brokerInstance++;
       this.abi = abi;
       this.contractAddress = contractAddr;
       this.startBlock = startBlock;
       this.wsEndpoint = wsEndpoint;
       this.httpEndpoint = httpEndpoint;
-      this.coinbase = coinbase;
       this.numRejections = 0;
     }
 
@@ -25,12 +22,14 @@ class Broker {
         this.httpWeb3 = new Web3(new Web3.providers.HttpProvider(this.httpEndpoint));
         this.wsBettingHouse = new this.wsWeb3.eth.Contract(this.abi, this.contractAddress);
         this.httpBettingHouse = new this.httpWeb3.eth.Contract(this.abi, this.contractAddress);
+        this.backoff = 0;
     }
 
     setupWSProvider() {
         const handler = (resolve, reject) => {
             let provider = new Web3.providers.WebsocketProvider(this.wsEndpoint);
                 provider.on('connect', (e) => {
+                    this.backoff = 0;
                     this.numRejections = 0;
                     logger.log('web3', 'info', "Connected to broker websocket successfully!", {
                         instance: this.instance
@@ -38,6 +37,7 @@ class Broker {
                     resolve(provider);
                 });
                 const errorHandler = async (e) => {
+                    this.backoff = this.numRejections * 2000;
                     this.numRejections++;
                     logger.log('web3', 'error', "Error has occured in Broker websocket provider, restarting provider!", {
                         error: e,
@@ -49,27 +49,14 @@ class Broker {
                     }
                     let provider = await this.setupWSProvider();
                     this.wsWeb3 = new Web3(provider);
-                    this.resetListeners();
-                    this.reconnectHandler();
+                    await this.reconnectHandler();
                 };
                 const boundHandler = errorHandler.bind(this);
-                provider.on('error', boundHandler);
-                provider.on('end', boundHandler);
+                provider.on('error', () => {this.removeListeners(); setTimeout(boundHandler, this.backoff)});
+                provider.on('end', () => {this.removeListeners(); setTimeout(boundHandler, this.backoff)});
         };
         const boundHandler = handler.bind(this);
         return new Promise(boundHandler);
-    }
-
-    makeMatch(name, fixtureId, teamA, teamB, time) {
-        return this.httpBettingHouse.methods.addMatch(name, fixtureId, teamA, teamB, time).send({
-            from: this.coinbase,
-        });
-    }
-
-    cancelMatch(matchId) {
-        return this.httpBettingHouse.methods.cancelMatch(matchId).send({
-          from: this.coinbase,
-        });
     }
 
     getBet(matchId, betId) {
@@ -103,32 +90,14 @@ class Broker {
         return this.httpBettingHouse.methods.getMinimumBet().call();
     }
 
-    changeMiniumBet(newMin) {
-        return this.httpBettingHouse.changeMiniumBet(newMin).send({
-            from: this.coinbase
-        });
-    }
-
     getCommissions() {
         return this.httpBettingHouse.methods.getCommissions().call();
-    }
-
-    withdrawCommissions() {
-        return this.httpBettingHouse.methods.withdrawCommissions().send({
-            from: this.coinbase
-        });
     }
 
     getBalance() {
         return this.httpBettingHouse.getBalance().call();
     }
     
-    withdrawBalance() {
-        return this.httpBettingHouse.withdrawBalance.send({
-            from: this.coinbase
-        });
-    }
-
     addMatchCreatedEventListener(listener = function(error, result){}) {
         this.matchCreatedEventListener = listener;
         this.wsBettingHouse.events.MatchCreated(listener);
@@ -159,8 +128,18 @@ class Broker {
         this.wsBettingHouse.events.BetPlaced(listener);
     }
 
-    getBetPlacedEvents(since = this.startBlock, callback = function(err, result){}) {
-        return this.wsBettingHouse.getPastEvents('BetPlaced', { fromBlock: since }, callback);
+    getBetPlacedEvents(since = this.startBlock) {
+        let that = this;
+        return new Promise((resolve, request) => {
+            that.wsBettingHouse.getPastEvents('BetPlaced', {fromBlock: since, to: "latest"}, (err, result) => {
+                if (err != null) {
+                    reject(err);
+                    return;
+                } else {
+                    resolve(result);
+                }
+            });
+        });
     }
 
     addBetCancelledEventListener(listener = function(error, result){}) {
@@ -168,8 +147,18 @@ class Broker {
         this.wsBettingHouse.events.BetCancelled(listener);
     }
 
-    getBetCancelledEvents(since = this.startBlock, callback = function(err, result){}) {
-        return this.wsBettingHouse.getPastEvents('BetCancelled', { fromBlock: since }, callback);
+    getBetCancelledEvents(since = this.startBlock) {
+        let that = this;
+        return new Promise((resolve, request) => {
+            that.wsBettingHouse.getPastEvents('BetCancelled', {fromBlock: since, to: "latest"}, (err, result) => {
+                if (err != null) {
+                    reject(err);
+                    return;
+                } else {
+                    resolve(result);
+                }
+            });
+        });
     }
 
     resetListeners() {
@@ -180,6 +169,17 @@ class Broker {
         this.addMatchOverEventListener(this.matchOverEventListener);
         this.addBetPlacedEventListener(this.betPlacedEventListener);
         this.addBetCancelledEventListener(this.betCancelledEventListener);
+    }
+
+    removeListeners() {
+        const blank = function(){};
+        this.wsBettingHouse.events.MatchCreated(blank);
+        this.wsBettingHouse.events.MatchCancelled(blank);
+        this.wsBettingHouse.events.MatchFailedAttemptedPayoutRelease(blank);
+        this.wsBettingHouse.events.MatchFailedPayoutRelease(blank);
+        this.wsBettingHouse.events.MatchOver(blank);
+        this.wsBettingHouse.events.BetPlaced(blank);
+        this.wsBettingHouse.events.BetCancelled(blank);
     }
 
     addReconnectHandler(handler = function(){}) {
