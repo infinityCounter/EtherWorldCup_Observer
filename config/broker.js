@@ -1,8 +1,8 @@
 module.exports = {
     WSEndpoint: "wss://rinkeby.infura.io/ws",
     HTTPEndpoint: "https://rinkeby.infura.io/PwcyIGszs2x6sS6NIU1Q",
-    ContractAddess: "0xf47003bcce52b91e50e792ab9e925d7be88bf82d",
-    StartBlockHeight: 2274892,
+    ContractAddess: "0x0B46483A367c4eFBe3e30E8E4753c5f4D883dB42",
+    StartBlockHeight: 2348197,
     ABI: [
       {
         "anonymous": false,

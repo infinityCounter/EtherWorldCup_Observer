@@ -1,7 +1,10 @@
+const util = require('util');
 const redis = require('redis');
+const bluebird = require('bluebird');
 
 const logger = require('../logging/logger.js');
 
+bluebird.promisifyAll(redis);
 let instance = 0;
 
 class RedisClient {
@@ -187,6 +190,33 @@ class RedisClient {
                     resolve(result);
                 }
             });
+        });
+    }
+
+    transaction(operations) {
+        let that = this;
+        let tx = that.client.multi();
+        return new Promise((resolve, reject) => {
+            operations.map(commandSet => {
+                if(!util.isArray(commandSet)) {
+                    reject("Command Set must be an array");
+                }
+                console.log(commandSet)
+                let command = commandSet[0];
+                if(commandSet.length > 1) {
+                    let args = commandSet.slice(1);
+                    tx = tx[command](...args); 
+                } else {
+                    tx = tx[command]();
+                }
+            });
+            tx.exec((err, replies) => {
+                if (err != null) {
+                    reject(err);
+                } else {
+                    resolve(replies);
+                }
+            })
         });
     }
 }

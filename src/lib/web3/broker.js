@@ -203,8 +203,10 @@ class Broker {
             TotalTeamABets: this.weiToEth(matchData[1][1]),
             TotalTeamBBets: this.weiToEth(matchData[1][2]),
             TotalDrawBets: this.weiToEth(matchData[1][3]),
+            NumBets: parseInt(matchData[1][4]),
             Cancelled: matchData[0][6],
-            Locked: matchData[0][7]
+            Locked: matchData[0][7],
+            NumPayoutAttempts: parseInt(matchData[1][5]),
         };
     }
 

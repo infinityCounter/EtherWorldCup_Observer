@@ -13,6 +13,7 @@
   "license": "ISC",
   "dependencies": {
     "axios": "^0.18.0",
+    "bluebird": "^3.5.1",
     "express": "^4.16.3",
     "ganache-cli": "^6.1.0",
     "lodash": "^4.17.10",
@@ -21,6 +22,7 @@
     "redis": "^2.8.0",
     "sequelize": "^4.37.7",
     "truffle-hdwallet-provider": "0.0.5",
+    "util": "^0.10.3",
     "web3": "^1.0.0-beta.34",
     "winston": "^3.0.0-rc5",
     "xmlhttprequest": "^1.8.0"

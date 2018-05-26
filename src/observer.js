@@ -67,15 +67,38 @@ const getRedisMatchKeys = function(matchId) {
     const prefix = `match:${matchId}`;
     return [
         `${prefix}:status`,
-        `${prefix}:score`
+        `${prefix}:score`,
+        `${prefix}:totalNumBets`,
+        `${prefix}:totalTeamA`,
+        `${prefix}:totalTeamB`,
+        `${prefix}:totalDraw`,
+        `${prefix}:numPayoutAttempts`,
     ];
 };
 
-const seedRedisMatchKeys = function(matchId) {
+function seedRedisMatchKeys(matchId) {
     const keys = getRedisMatchKeys(matchId);
     return Promise.all([
         redis.setKey(keys[0], 'TIMED'),
-        redis.setKey(keys[1], '0-0')
+        redis.setKey(keys[1], '0-0'),
+        redis.setKey(keys[2], '0'),
+        redis.setKey(keys[3], '0'),
+        redis.setKey(keys[4], '0'),
+        redis.setKey(keys[5], '0'),
+        redis.setKey(keys[6], '0'),
+    ]);
+}
+
+function seedRedisMatchKeysX(matchId, match) {
+    const keys = getRedisMatchKeys(matchId);
+    return Promise.all([
+        redis.setKey(keys[0], 'TIMED'),
+        redis.setKey(keys[1], '0-0'),
+        redis.setKey(keys[2], match.NumBets),
+        redis.setKey(keys[3], match.TotalTeamABets),
+        redis.setKey(keys[4], match.TotalTeamBBets),
+        redis.setKey(keys[5], match.TotalDrawBets),
+        redis.setKey(keys[6], match.NumPayoutAttempts),
     ]);
 }
 
@@ -86,14 +109,6 @@ const getRedisUserkeys = function(address) {
         `${prefix}:totalWon`,
         `${prefix}:betIds`,
     ];
-};
-
-const seedRedisUser = function(address) {
-    const keys = getRedisUserkeys(address);
-    return Promise.all([
-        redis.setKey(keys[0], 0),
-        redis.setKey(keys[1], 0)
-    ]);
 };
 
 const pushBetToUserRedis = function(bet) {
@@ -182,7 +197,6 @@ const seedTeams = async function() {
         // This catches the save teams call in case of a failure
         .then(resolve)
         .catch((err) => {
-            console.log('err')
             logger.log('postgres', 'error', 'Unable to save teams in seedTeams', {
                 error: err
             });
@@ -213,9 +227,12 @@ const matchEventHandler = async function(err, result) {
             if (finishedSyncing) {
                 postgres.matches.push(...pendingMatchUpdates);
                 pendingMatchUpdates = [];
-                postgres.save().then(() => {
-                    postgres.tea
-                })
+                postgres.saveMatches().then(() => {
+                    if (result.event == 'MatchCreated') {
+                        seedRedisMatchKeysX(matchId, match);     
+                        autoUpdateMatchUntilEnd(match);                 
+                    }
+                }).catch(()=>{});
             }
         })
         .catch(err => {
@@ -242,7 +259,7 @@ const seedMatches = async function(err, result) {
     });
     postgres.matches.push(...matches);
     await postgres.saveMatches();
-    await matches.map(match => seedRedisMatchKeys(match.Id));
+    await matches.map(match => seedRedisMatchKeysX(match.Id, match));
     matches.map(autoUpdateMatchUntilEnd);
 }
 
@@ -251,42 +268,42 @@ const parseFixture = function(raw) {
 }
 
 const updateMatchCache = async function(matchId) {
+    let matchData = null;
     try {
-        const matchData = await broker.getFullMatchDetails(matchId);
+        matchData = await broker.getFullMatchDetails(matchId);
     } catch (err) {
         logger.log('web3', 'error', "Unable to get full match details - updateMatchCache", {
             error: err
         });
         throw err;
     }
-    const match = broker.parseMatch(matchData);
+    const match = broker.parseMatch(matchId, matchData);
     postgres.matches.push(match);
     try {
-        await postgres.match.save();
+        await postgres.saveMatches();
     } catch (err) {
         logger.log('postgres', 'error', "Unable to save match details - updateMatchCache", {
             error: err
         });
         throw err;
     }
+    let resp = null;
     try {
-        let fixture = await footballData.getFixtureAsync(match.FixtureId);
+        resp = await footballData.getFixtureAsync(match.FixtureId);
     } catch(err) {
         logger.log('http', 'error', "Unable to get football match data - updateMatchCache", {
             error: err
         });
         throw err;
     }
-    try {
-        fixture = parseFixture(fixture);
-    } catch (err) {
-        logger.log("observer", 'error', 'Unable to parseMatchFixture', {
-            error: err
-        });
-        throw err;
+    if (resp.data.hasOwnProperty("error")) {
+        logger.log('htttp', 'error', 'Got error when getting fixture');
+        throw 'Got error when getting fixture';
     }
-    const homeTeamScore = (fixture.result.goalsHomeTeam != null) ? fixture.goalsHomeTeam : 0;
-    const awayTeamScore = (fixture.result.goalsAwayTeam != null) ? fixture.goalsAwayTeam : 0;
+    let fixture = resp.data.fixture;
+    const homeTeamScore = (fixture.result.goalsHomeTeam != null) ? fixture.result.goalsHomeTeam : 0;
+    const awayTeamScore = (fixture.result.goalsAwayTeam != null) ? fixture.result.goalsAwayTeam : 0;
+    let keys = getRedisMatchKeys(matchId);
     try {
         await Promise.all([
             redis.setKey(keys[0], fixture.status),
@@ -316,6 +333,10 @@ const minutes = function(num) {
     return secondsToMilli(num * 60);
 };
 
+const seconds = function(num) {
+    return secondsToMilli(num);
+}
+
 // This function will update a match's info in postgres
 // and in the redis cache including it's fixture
 // starting 15 or less minutes before a match
@@ -325,12 +346,13 @@ const autoUpdateMatchUntilEnd = function(match) {
         startTime = 0;
     }
     const update = async function(match) {
+        console.log(`Gonna update cache for match ${match.Id}`)
         try {
             let updated = await updateMatchCache(match.Id);
             match = updated.Data;
-        } catch (err)  {
+        } catch (_)  {
             logger.log('observer', 'error', `Was not able to update match cache in autoupdater ${match.Id}`, {
-                error: err
+                error: ""
             });
         }
         // If it has not been 3 and a half hours since the match started
@@ -341,7 +363,20 @@ const autoUpdateMatchUntilEnd = function(match) {
         }
     }
     // we want to run this at least once for all matches
-    setTimeout(() => update(match), 0);
+    setTimeout(() => update(match), startTime);
+}
+
+let matchUpdateSchedule = new Map();
+const scheduleMatchUpdate = function(matchId, time) {
+    if (matchUpdateSchedule.has(matchId)) {
+        console.log("Update already scheduled")
+        return;
+    }
+    matchUpdateSchedule.set(matchId, true);
+    setTimeout(function() {
+        updateMatchCache(matchId);
+        matchUpdateSchedule.delete(matchId);
+    }, time);
 }
 
 const updateBetRedisKeys = async function(bet, block) {
@@ -349,13 +384,20 @@ const updateBetRedisKeys = async function(bet, block) {
     if (block <= parseInt(redisLastBetBlock)) {
         return;
     }
-
+    const userKeys = getRedisUserkeys(bet.Address);
+    await redis.transaction([
+        ['set', REDIS_LAST_BET_PLACED_BLOCK, block],
+        ['incr', REDIS_CONTRACT_NUM_BETS],
+        ['incrbyfloat', REDIS_CONTRACT_TOTAL_BET, bet.Amount],
+        ['incrbyfloat', userKeys[0], bet.Amount],
+        ['sadd', userKeys[2], `${bet.Match}:${bet.Id}`]
+    ]);
 }
 
 const betPlacedEventHandler = async function(err, result) {
-    if (err != null) {
+    if (err == null) {
         const bet = broker.parseBetPlacedEvent(result);
-        const eventBlock = result.blockHeight;
+        const eventBlock = result.blockNumber;
         pendingBetPlaces.push(bet);
         pendingLastBetPlacedBlock = eventBlock;
         if (finishedSyncing) {
@@ -363,6 +405,7 @@ const betPlacedEventHandler = async function(err, result) {
             pendingBetPlaces = [];
             postgres.save()
             .then(() => { return updateBetRedisKeys(bet, eventBlock) })
+            .then(() => scheduleMatchUpdate(bet.Match, seconds(100)))
             .catch((err) => {
                 logger.log('postgres', 'error', 'Error occurred when attempting to save bets in bet placed event handler', {
                     error: err
@@ -388,6 +431,10 @@ const main = function() {
     console.log("ALL GOOD!")
 }
 
+broker.reconnectHandler = async function() {
+    await seedMatches();
+}
+
 Promise.all([
     broker.setup(),
     redis.setup(),
@@ -399,11 +446,7 @@ Promise.all([
 // This is what happens when that promise all resolves
 .then(seedTeams)
 .then(() => {
-    broker.addMatchCreatedEventListener((err, event) => {
-        matchEventHandler(err, event)
-        .then(() => { seedRedisMatchKeys(event.returnValues.matchId) })
-        .catch(()=>{});
-    });
+    broker.addMatchCreatedEventListener(matchEventHandler);
     broker.addMatchCancelledEventListener(matchEventHandler)
     broker.addMatchFailedAttemptedPayoutReleaseEventListener(matchEventHandler)
     broker.addMatchFailedPayoutReleaseEventListener(matchEventHandler)
@@ -411,9 +454,7 @@ Promise.all([
 })
 .then(seedMatches)
 .then(() => {
-    console.log("reached bet placed then")
     broker.addBetPlacedEventListener(betPlacedEventHandler);
-    console.log("made it out of this right here");
 })
 .then(finishedSyncingHandler)
 .then(main)

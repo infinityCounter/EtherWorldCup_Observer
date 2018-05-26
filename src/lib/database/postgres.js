@@ -125,30 +125,6 @@ class PgClient {
                 type: Sequelize.INTEGER,
                 field: 'winner'
             },
-            TotalTeamABets: {
-                type: Sequelize.DECIMAL(18, 8),
-                field: 'total_team_a_bets',
-                defaultValue: 0,
-                allowNull: false
-            },
-            TotalTeamBBets: {
-                type: Sequelize.DECIMAL(18, 8),
-                field: 'total_team_b_bets',
-                defaultValue: 0,
-                allowNull: false
-            },
-            TotalDrawBets: {
-                type: Sequelize.DECIMAL(18, 8),
-                field: 'total_draw_bets',
-                defaultValue: 0,
-                allowNull: false
-            },
-            NumPayoutAttempts: {
-                type: Sequelize.INTEGER,
-                field: 'num_payout_attempted',
-                defaultValue: 0,
-                allowNull: false
-            }, 
             Locked: {
                 type: Sequelize.BOOLEAN,
                 defaultValue: false,
@@ -163,8 +139,9 @@ class PgClient {
         this.models.Bet = this.db.define('bets', {
             Id: {
                 type: Sequelize.INTEGER,
-                unique: 'compositeIndex',
-                field: 'id'
+                unique: 'composite',
+                field: 'id',
+                primaryKey: false
             },
             Address: {
                 type: Sequelize.STRING(42),
@@ -191,7 +168,7 @@ class PgClient {
                     key: 'id'
                 },
                 allowNull: false,
-                unique: 'compositeIndex'
+                unique: 'composite',
             },
             Cancelled: {
                 type: Sequelize.BOOLEAN,
@@ -210,6 +187,7 @@ class PgClient {
             ]
         });
         this.models.Match.hasMany(this.models.Bet);
+        this.models.Bet.belongsTo(this.models.Match)
         await this.db.sync({force: force});
         const keys = Object.keys(this.models);
         keys.map((key) => {
@@ -234,7 +212,6 @@ class PgClient {
     }
 
     async saveTeams() {
-        logger.log('postgres', 'info', 'Attempting to save teams');
         await this.models.Team.sequelize.transaction((t) => {
             return this.models.Team.bulkUpsert(this.teams, {transaction: t});
         });
