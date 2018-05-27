@@ -507,7 +507,7 @@ const setPlacedBetRedisKeys = async function(bet, block, force = false) {
     ]);
 }
 
-const setCancelledBetRedisKeys = async function(block, force = false) {
+const setCancelledBetRedisKeys = async function(matchId, block, force = false) {
     logger.log('observer', 'info', `Setting bet cancelled event redis keys`);
     let redisLastCancelBlock = brokerConfig.StartBlockHeight;
     try {
@@ -522,8 +522,10 @@ const setCancelledBetRedisKeys = async function(block, force = false) {
     if (block <= parseInt(redisLastCancelBlock) && !force) {
         return;
     }
+    const matchKeys = getRedisMatchKeys(matchId);
     await redis.transaction([
         ['set', REDIS_LAST_BET_CANCELLED_BLOCK, block],
+        ['set', matchKeys[8], Date.now()],
     ]);
 }
 
@@ -566,7 +568,7 @@ const betCancelledEventHandler = async function(err, result) {
             postgres.cancelledBets.push(...pendingBetCancels);
             pendingBetCancels = [];
             postgres.saveBets()
-            .then(() => { return setCancelledBetRedisKeys(eventBlock) })
+            .then(() => { return setCancelledBetRedisKeys(bet[0], eventBlock) })
             .then(() => scheduleMatchUpdate(bet[0], seconds(5)))
             .catch((err) => {
                 logger.log('observer', 'error', 'Error occurred when attempting to save bets in bet cancelled event handler', {
@@ -650,11 +652,14 @@ const seedBets = async function() {
     if (cancelEventLog.length > 0) {
         const cancelEventLogsLastBlock = cancelEventLog[cancelEventLog.length - 1].blockNumber;
         if ( cancelEventLogsLastBlock > lastCancelBlock) {
-            const betsCancelled = cancelEventLog.map(event => [event.returnValues.matchId, event.returnValues.betId]);
+            const betsCancelled = cancelEventLog.map(event => [
+                parseInt(event.returnValues.matchId), 
+                parseInt(event.returnValues.betId)
+            ]);
             postgres.cancelledBets.push(...betsCancelled);
             try { 
                 await postgres.saveBets();
-                setCancelledBetRedisKeys(cancelEventLogsLastBlock);
+                betsCancelled.map(bet => setCancelledBetRedisKeys(bet[0], cancelEventLogsLastBlock));
             } catch (e) {
                 const err = 'Error occurred when attempting to seed bets cancelled bets';
                 logger.log('observer', 'error', err, {

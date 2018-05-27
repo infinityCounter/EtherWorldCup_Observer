@@ -36,6 +36,7 @@ class Broker {
                     resolve(new Web3(provider));
                 });
                 const errorHandler = async (e) => {
+                    this.wsWeb3 = null;
                     this.backoff = this.numRejections * 2000;
                     this.numRejections++;
                     logger.log('web3', 'error', "Error has occured in Broker websocket provider, restarting provider!", {

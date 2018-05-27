@@ -140,6 +140,7 @@ class PgClient {
                 type: Sequelize.INTEGER,
                 field: 'id',
                 primaryKey: true,
+                autoIncrement: true,
             },
             ContractId: {
                 type: Sequelize.INTEGER,
