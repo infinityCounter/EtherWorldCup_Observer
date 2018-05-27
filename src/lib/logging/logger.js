@@ -1,11 +1,12 @@
 const fs           = require('fs');
 const path         = require('path');
+const shelljs      = require('shelljs');
 
 const winston      = require('winston');
 
 const isProductionEnv = (process.env.ENVIRONMENT == 'production');
 
-let LOG_ROOT = process.env.OBSERVER_LOGS || "/var/logs/ewc/observer";
+let LOG_ROOT = process.env.OBSERVER_LOGS || "/var/log/ewc/observer";
 
 const actions = ['postgres', 'redis', 'http', 'web3', 'observer'];
 let logDirs   = {};
@@ -29,16 +30,11 @@ let logger = {
     }
 };
 
-// If the log folders don't exist, prepare them
-if (!fs.existsSync(LOG_ROOT)) {
-    fs.mkdirSync(LOG_ROOT);
-}
-
 actions.forEach(function(action) {
     outputDir = path.join(LOG_ROOT, action);
     logDirs[action] = outputDir;
     if (!fs.existsSync(outputDir)) {
-        fs.mkdirSync(outputDir);
+        shelljs.mkdir('-p', outputDir);
     }
     logger[action] = winston.createLogger({
         format: winston.format.combine(

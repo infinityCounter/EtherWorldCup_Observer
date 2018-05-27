@@ -138,8 +138,13 @@ class PgClient {
         this.models.Bet = this.db.define('bets', {
             Id: {
                 type: Sequelize.INTEGER,
-                unique: 'composite',
                 field: 'id',
+                primaryKey: true,
+            },
+            ContractId: {
+                type: Sequelize.INTEGER,
+                unique: 'composite',
+                field: 'contractId',
                 primaryKey: false
             },
             Address: {

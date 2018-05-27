@@ -17,15 +17,14 @@ class Broker {
     }
 
     async setup() {
-        let provider = await this.setupWSProvider();
-        this.wsWeb3 = new Web3(provider);
+        this.wsWeb3 = await this.setupWS();
         this.httpWeb3 = new Web3(new Web3.providers.HttpProvider(this.httpEndpoint));
         this.wsBettingHouse = new this.wsWeb3.eth.Contract(this.abi, this.contractAddress);
         this.httpBettingHouse = new this.httpWeb3.eth.Contract(this.abi, this.contractAddress);
         this.backoff = 0;
     }
 
-    setupWSProvider() {
+    setupWS() {
         const handler = (resolve, reject) => {
             let provider = new Web3.providers.WebsocketProvider(this.wsEndpoint);
                 provider.on('connect', (e) => {
@@ -34,7 +33,7 @@ class Broker {
                     logger.log('web3', 'info', "Connected to broker websocket successfully!", {
                         instance: this.instance
                     });
-                    resolve(provider);
+                    resolve(new Web3(provider));
                 });
                 const errorHandler = async (e) => {
                     this.backoff = this.numRejections * 2000;
@@ -47,8 +46,7 @@ class Broker {
                     if (this.numRejections >= 5) {
                         reject(e);
                     }
-                    let provider = await this.setupWSProvider();
-                    this.wsWeb3 = new Web3(provider);
+                    this.wsWeb3 = await this.setupWS();
                     await this.reconnectHandler();
                 };
                 const boundHandler = errorHandler.bind(this);
@@ -212,7 +210,7 @@ class Broker {
 
     parseBetPlacedEvent(betEvent) {
         return {
-            Id: parseInt(betEvent.returnValues.betId),
+            ContractId: parseInt(betEvent.returnValues.betId),
             Address: betEvent.returnValues.better,
             Amount: this.weiToEth(betEvent.returnValues.amount),
             Decision: `${parseInt(betEvent.returnValues.outcome)}`,

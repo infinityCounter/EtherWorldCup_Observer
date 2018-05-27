@@ -70,11 +70,14 @@ const getRedisMatchKeys = function(matchId) {
         `${prefix}:totalTeamB`,
         `${prefix}:totalDraw`,
         `${prefix}:numPayoutAttempts`,
+        `${prefix}:lastMatchMetaUpdate`,
+        `${prefix}:lastMatchBetUpdate`
     ];
 };
 
 function seedRedisMatchKeys(matchId) {
     const keys = getRedisMatchKeys(matchId);
+    const timestamp = Date.now();
     return redis.transaction([
         ['set', keys[0], 'TIMED'],
         ['set', keys[1], '0-0'],
@@ -82,12 +85,40 @@ function seedRedisMatchKeys(matchId) {
         ['set', keys[3], '0'],
         ['set', keys[4], '0'],
         ['set', keys[5], '0'],
-        ['set', keys[6], '0']
+        ['set', keys[6], '0'],
+        ['set', keys[7], timestamp],
+        ['set', keys[8], timestamp],
     ]);
 };
 
+const updateMatchMetaTimestamp = function(matchId) {
+    const keys = getRedisMatchKeys(matchId);
+    const timestamp = Date.now();
+    return redis.transaction([
+        ['set', keys[8], timestamp],
+    ]);
+}
+
+const updateMatchBettingTimestamp = function(matchId) {
+    const keys = getRedisMatchKeys(matchId);
+    const timestamp = Date.now();
+    return redis.transaction([
+        ['set', keys[7], timestamp],
+    ]);
+}
+
+const updateMatchTimestamps = function(matchId) {
+    const keys = getRedisMatchKeys(matchId);
+    const timestamp = Date.now();
+    return redis.transaction([
+        ['set', keys[7], timestamp],
+        ['set', keys[8], timestamp],
+    ]);
+}
+
 function seedRedisMatchKeysX(matchId, match) {
     const keys = getRedisMatchKeys(matchId);
+    const timestamp = Date.now();
     // Use a transaction to ensure data consistency
     return redis.transaction([
         ['set', keys[0], 'TIMED'],
@@ -96,7 +127,9 @@ function seedRedisMatchKeysX(matchId, match) {
         ['set', keys[3], match.TotalTeamABets],
         ['set', keys[4], match.TotalTeamBBets],
         ['set', keys[5], match.TotalDrawBets],
-        ['set', keys[6], match.NumPayoutAttempts]
+        ['set', keys[6], match.NumPayoutAttempts],
+        ['set', keys[7], timestamp],
+        ['set', keys[8], timestamp],
     ]);
 };
 
@@ -248,6 +281,9 @@ const matchEventHandler = async function(err, result) {
                     if (result.event == 'MatchCreated') {
                         seedRedisMatchKeysX(matchId, match);     
                         autoUpdateMatchUntilEnd(match);                 
+                    } else {
+                        // update timestamp so api can know to read new version
+                        updateMatchMetaTimestamp(matchId);
                     }
                 }).catch(()=>{});
             } else {
@@ -359,9 +395,11 @@ const updateMatchCache = async function(matchId) {
     const awayTeamScore = (fixture.result.goalsAwayTeam != null) ? fixture.result.goalsAwayTeam : 0;
     let keys = getRedisMatchKeys(matchId);
     try {
-        await Promise.all([
-            redis.setKey(keys[0], fixture.status),
-            redis.setKey(keys[1], `${homeTeamScore}-${awayTeamScore}`)
+        const timestamp = Date.now();
+        await redis.transaction([
+            ['set', keys[0], fixture.status],
+            ['set', keys[1], `${homeTeamScore}-${awayTeamScore}`],
+            ['set', keys[7], timestamp]
         ]);
     } catch (err) {
         logger.log('redis', 'error', 'Unable to set redis match key - updateMatchCache', {
@@ -443,7 +481,7 @@ const scheduleMatchUpdate = function(matchId, time) {
 }
 
 const setPlacedBetRedisKeys = async function(bet, block, force = false) {
-    logger.log('observer', 'info', `Setting bet paced event redis keys for bet ${bet.Id}`);
+    logger.log('observer', 'info', `Setting bet paced event redis keys for bet ${bet.Match}:${bet.ContractId}`);
     let redisLastBetBlock = brokerConfig.StartBlockHeight;
     try {
         redisLastBetBlock = await redis.getKey(REDIS_LAST_BET_PLACED_BLOCK);
@@ -457,13 +495,15 @@ const setPlacedBetRedisKeys = async function(bet, block, force = false) {
     if (block <= parseInt(redisLastBetBlock) && !force) {
         return;
     }
+    const matchKeys = getRedisMatchKeys(bet.Match);
     const userKeys = getRedisUserkeys(bet.Address);
     await redis.transaction([
         ['set', REDIS_LAST_BET_PLACED_BLOCK, block],
         ['incr', REDIS_CONTRACT_NUM_BETS],
         ['incrbyfloat', REDIS_CONTRACT_TOTAL_BET, bet.Amount],
         ['incrbyfloat', userKeys[0], bet.Amount],
-        ['sadd', userKeys[2], `${bet.Match}:${bet.Id}`]
+        ['sadd', userKeys[2], `${bet.Match}:${bet.ContractId}`],
+        ['set', matchKeys[8], Date.now()],
     ]);
 }
 
@@ -499,7 +539,7 @@ const betPlacedEventHandler = async function(err, result) {
             pendingBetPlaces = [];
             postgres.saveBets()
             .then(() => { return setPlacedBetRedisKeys(bet, eventBlock, false) })
-            .then(() => scheduleMatchUpdate(bet.Match, seconds(5)))
+            .then(() => scheduleMatchUpdate(bet.Match, seconds(3)))
             .catch((err) => {
                 logger.log('observer', 'error', 'Error occurred when attempting to save bets in bet placed event handler', {
                     error: err
