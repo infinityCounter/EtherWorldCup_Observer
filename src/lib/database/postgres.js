@@ -111,12 +111,12 @@ class PgClient {
                 allowNull: false
             },
             StartTime: {
-                type: Sequelize.DATE, 
+                type: Sequelize.INTEGER, 
                 field: 'start_time',
                 allowNull: false
             },
             CloseTime: {
-                type: Sequelize.DATE, 
+                type: Sequelize.INTEGER, 
                 field: 'betting_close_time',
                 allowNull: false
             },

@@ -442,7 +442,7 @@ const cancelAllLaters = function() {
 // and in the redis cache including it's fixture
 // starting 15 or less minutes before a match
 const autoUpdateMatchUntilEnd = function(match) {
-    let startTime = (match.StartTime - minutes(15) - Date.now());
+    let startTime = ((match.StartTime * 1000) - minutes(15) - Date.now());
     if (startTime < 0) {
         startTime = 0;
     }
@@ -456,10 +456,10 @@ const autoUpdateMatchUntilEnd = function(match) {
                 error: err
             });
         }
-        // If it has not been 3 and a half hours since the match started
+        // If it has not been 3 hours and 12 minutes since the match started
         // or the match is not cancelled
         // or the winner is not set
-        if (Date.now() < match.StartTime + hours(3.5) && !match.Cancelled && match.Winner == 0) {
+        if (Date.now() < ((match.StartTime*1000) + hours(3.2)) && !match.Cancelled && match.Winner == 0) {
             doLater(() => update(match), minutes(5));
         }
     }
