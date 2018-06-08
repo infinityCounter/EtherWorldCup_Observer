@@ -60,10 +60,6 @@ class RedisClient {
     }
 
     cleanup() {
-        if (typeof this.client != 'undefined' && this.client != null) {
-            this.client.quit();
-            this.client = null;
-        }
         if (this.timeoutId != null) {
             global.clearTimeout(this.timeoutId);
         }

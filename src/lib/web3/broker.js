@@ -63,7 +63,7 @@ class Broker {
 
             this.wsWeb3 = new Web3(provider);
             this.wsWeb3.eth.subscribe('newBlockHeaders', (error, blockHeader) => {
-                if (error) return console.error(error);;
+                if (error) return console.error(error);
             }).on('data', (_) => {});
         };
         const boundHandler = handler.bind(this);
@@ -231,7 +231,6 @@ class Broker {
             Match: parseInt(betEvent.returnValues.matchId),
             Cancelled: false,
             Claimed: false,
-            Block: parseInt(betEvent.blockNumber),
         }
     }
 };

@@ -238,6 +238,25 @@ class PgClient {
         return `UPDATE bets SET ${action} = true WHERE (${params.join(" OR ")});`;
     }
 
+    buildBetInsertQuery(bets) {
+        let str = "INSERT INTO bets VALUES ";
+        // Id
+        // Address
+        // Amount
+        // Decision
+        // Match
+        // Cancelled
+        // Claimed
+        bets.map((bet, idx) => {
+            str += `(${bet.Id}, '${bet.Address}', ${bet.Amount}, '${bet.Decision}', ${bet.Match}, ${bet.Cancelled}, ${bet.Claimed})`;
+            if (idx + 1 < bets.length) {
+                str += ", ";
+            }
+        })
+        str += " ON CONFLICT DO NOTHING";
+        return str;
+    }
+
     async saveBets() {
         logger.log('postgres', 'info', 'Attempting to save bets');
         await this.models.Bet.sequelize.transaction(t => {
@@ -245,9 +264,11 @@ class PgClient {
             // Create new bets
             if (this.unpersistedBets.length > 0) {
                 promiseArr.push(
-                    this.models.Bet.bulkCreate(
-                        this.unpersistedBets, 
-                        {transaction: t, returning: true}
+                    this.db.query(
+                        this.buildBetInsertQuery(this.unpersistedBets), {
+                            type: Sequelize.QueryTypes.INSERT,
+                            transaction: t,
+                        }
                     )
                 );
             }
@@ -281,6 +302,7 @@ class PgClient {
         });
         this.unpersistedBets = [];
         this.cancelledBets = [];
+        this.claimedBets = [];
         logger.log('postgres', 'info', 'Saved bets');
     }
 

@@ -52,12 +52,10 @@ actions.forEach(function(action) {
     });
 });
 
-if (process.env.OBSERVER_ENV !== 'production') {
-    actions.forEach(function(action) {
-        logger[action].add(new winston.transports.Console({
-            format: winston.format.simple()
-        }));
-    });
-}
+actions.forEach(function(action) {
+    logger[action].add(new winston.transports.Console({
+        format: winston.format.simple()
+    }));
+});
 
 module.exports = logger;
