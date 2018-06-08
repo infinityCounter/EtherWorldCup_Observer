@@ -25,43 +25,46 @@ class Broker {
 
     setupWS() {
         const handler = (resolve, reject) => {
-                let provider = new Web3.providers.WebsocketProvider(this.wsEndpoint);
-                if (typeof this.wsWeb3 == 'undefined' || this.wsWeb3 == null) {
-                    this.wsWeb3 = new Web3(provider);
-                } else {
-                    this.wsWeb3.setProvider(provider);
-                }    
-                provider.on('connect', (e) => {
-                    this.wsBettingHouse = new this.wsWeb3.eth.Contract(this.abi, this.contractAddress);
-                    this.backoff = 0;
-                    this.numRejections = 0;
-                    logger.log('web3', 'info', "Connected to broker websocket successfully!", {
-                        instance: this.instance
-                    });
-                    resolve();
+            let provider = new Web3.providers.WebsocketProvider(this.wsEndpoint);
+            
+            provider.on('connect', (e) => {
+                this.wsBettingHouse = new this.wsWeb3.eth.Contract(this.abi, this.contractAddress);
+                this.backoff = 0;
+                this.numRejections = 0;
+                logger.log('web3', 'info', "Connected to broker websocket successfully!", {
+                    instance: this.instance
                 });
-                const errorHandler = async () => {
-                    this.backoff = this.numRejections * 2000;
-                    this.numRejections++;
-                    logger.log('web3', 'error', "Restarting ws provider after error!", {
-                        instance: this.instance,
-                        numRejections: this.numRejections
-                    });
-                    if (this.numRejections >= 5) {
-                        reject(e);
-                    }
-                    this.wsWeb3 = await this.setupWS();
-                    await this.reconnectHandler();
-                };
-                const boundHandler = errorHandler.bind(this);
-                provider.on('error', (e) => {
-                    this.disconnect(e);
-                    setTimeout(boundHandler, this.backoff);
+                resolve();
+            });
+
+            const errorHandler = async () => {
+                this.backoff = this.numRejections * 1200;
+                this.numRejections++;
+                logger.log('web3', 'error', "Restarting ws provider after error!", {
+                    instance: this.instance,
+                    numRejections: this.numRejections
                 });
-                provider.on('end', (e) => {
-                    this.disconnect(e);
-                    setTimeout(boundHandler, this.backoff);
-                });
+                if (this.numRejections >= 5) {
+                    reject(e);
+                }
+                this.wsWeb3 = await this.setupWS();
+                await this.reconnectHandler();
+            };
+
+            const boundHandler = errorHandler.bind(this);
+            provider.on('error', (e) => {
+                this.disconnect(e);
+                setTimeout(boundHandler, this.backoff);
+            });
+            provider.on('end', (e) => {
+                this.disconnect(e);
+                setTimeout(boundHandler, this.backoff);
+            });
+
+            this.wsWeb3 = new Web3(provider);
+            this.wsWeb3.eth.subscribe('newBlockHeaders', (error, blockHeader) => {
+                if (error) return console.error(error);;
+            }).on('data', (_) => {});
         };
         const boundHandler = handler.bind(this);
         return new Promise(boundHandler);
@@ -69,13 +72,8 @@ class Broker {
     
     disconnect(e) {
         logger.log('web3', 'error', "Error has occured in Broker websocket provider, disconnecting now!", {
-            error: e,
             instance: this.instance
         });
-        this.wsWeb3 = null;
-        this.wsBettingHouse = null;
-        this.httpWeb3 = null;
-        this.httpBettingHouse = null;
     }
 
     getBet(matchId, betId) {
@@ -113,10 +111,6 @@ class Broker {
         return this.httpBettingHouse.methods.getCommissions().call();
     }
 
-    getBalance() {
-        return this.httpBettingHouse.getBalance().call();
-    }
-    
     addMatchCreatedEventListener(listener = function(error, result){}) {
         this.matchCreatedEventListener = listener;
         this.wsBettingHouse.events.MatchCreated(listener);
@@ -198,16 +192,6 @@ class Broker {
         this.addBetClaimedEventListener(this.betClaimedEventListener);
     }
 
-    removeListeners() {
-        const blank = function(){};
-        this.wsBettingHouse.events.MatchCreated(blank);
-        this.wsBettingHouse.events.MatchUpdated(blank);
-        this.wsBettingHouse.events.MatchFailedPayoutRelease(blank);
-        this.wsBettingHouse.events.BetPlaced(blank);
-        this.wsBettingHouse.events.BetCancelled(blank);
-        this.wsBettingHouse.events.BetClaimed(blank);
-    }
-
     addReconnectHandler(handler = function(){}) {
         this.reconnectHandler = handler;
     }
@@ -247,6 +231,7 @@ class Broker {
             Match: parseInt(betEvent.returnValues.matchId),
             Cancelled: false,
             Claimed: false,
+            Block: parseInt(betEvent.blockNumber),
         }
     }
 };

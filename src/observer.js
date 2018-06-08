@@ -12,32 +12,34 @@ const { PgClient }    = require('./lib/database/postgres.js');
 const { RedisClient } = require('./lib/database/redis.js');
 
 /** Configuration files */
+const env = process.env.OBSERVER_ENV || "development";
+console.log(`Starting observer in ${env} environment`);
 let brokerConfig   = require('../config/broker.js');
 let postgresConfig = require('../config/postgres.js');
 let redisConfig    = require('../config/redis.js');
 
-const REDIS_LAST_BET_PLACED_BLOCK                        = 'lastBetPlacedBlock';
-const REDIS_LAST_BET_CANCELLED_BLOCK                     = 'lastBetCancelledBlock';
-const REDIS_LAST_BET_CLAIMED_BLOCK                       = 'lastBetClaimedBlock';
-const REDIS_CONTRACT_TOTAL_BET                           = 'contract:totalBet';
-const REDIS_CONTRACT_TOTAL_WON                           = 'contract:totalWon';
-const REDIS_CONTRACT_NUM_BETS                            = 'contract:numBets';
+const REDIS_LAST_BET_PLACED_BLOCK       = 'lastBetPlacedBlock';
+const REDIS_LAST_BET_CANCELLED_BLOCK    = 'lastBetCancelledBlock';
+const REDIS_LAST_BET_CLAIMED_BLOCK      = 'lastBetClaimedBlock';
+const REDIS_CONTRACT_TOTAL_BET          = 'contract:totalBet';
+const REDIS_CONTRACT_TOTAL_WON          = 'contract:totalWon';
+const REDIS_CONTRACT_NUM_BETS           = 'contract:numBets';
 
 let REDIS_KEY_DEFAULTS = {};
-REDIS_KEY_DEFAULTS[REDIS_LAST_BET_PLACED_BLOCK] = brokerConfig.StartBlockHeight;
-REDIS_KEY_DEFAULTS[REDIS_LAST_BET_CANCELLED_BLOCK] = brokerConfig.StartBlockHeight;
-REDIS_KEY_DEFAULTS[REDIS_LAST_BET_CLAIMED_BLOCK] = brokerConfig.StartBlockHeight;
-REDIS_KEY_DEFAULTS[REDIS_CONTRACT_TOTAL_BET] = 0;
-REDIS_KEY_DEFAULTS[REDIS_CONTRACT_TOTAL_WON] = 0;
-REDIS_KEY_DEFAULTS[REDIS_CONTRACT_NUM_BETS] = 0;
+REDIS_KEY_DEFAULTS[REDIS_LAST_BET_PLACED_BLOCK]    = brokerConfig[env].StartBlockHeight;
+REDIS_KEY_DEFAULTS[REDIS_LAST_BET_CANCELLED_BLOCK] = brokerConfig[env].StartBlockHeight;
+REDIS_KEY_DEFAULTS[REDIS_LAST_BET_CLAIMED_BLOCK]   = brokerConfig[env].StartBlockHeight;
+REDIS_KEY_DEFAULTS[REDIS_CONTRACT_TOTAL_BET]       = 0;
+REDIS_KEY_DEFAULTS[REDIS_CONTRACT_TOTAL_WON]       = 0;
+REDIS_KEY_DEFAULTS[REDIS_CONTRACT_NUM_BETS]        = 0;
 
-let postgres = new PgClient(postgresConfig);
-let redis    = new RedisClient(redisConfig.host, redisConfig.port);
-let broker   = new Broker(brokerConfig.WSEndpoint,
-    brokerConfig.HTTPEndpoint,
-    brokerConfig.ABI,
-    brokerConfig.ContractAddess,
-    brokerConfig.StartBlockHeight);
+let postgres = new PgClient(postgresConfig[env]);
+let redis    = new RedisClient(redisConfig[env].host, redisConfig[env].port, redisConfig[env].pass);
+let broker   = new Broker(brokerConfig[env].WSEndpoint,
+    brokerConfig[env].HTTPEndpoint,
+    brokerConfig[env].ABI,
+    brokerConfig[env].ContractAddess,
+    brokerConfig[env].StartBlockHeight);
 
 const shutdown = function (status = 0) {
     logger.log('observer', 'info', 'Shutting down observer....Cleaning up connections');
@@ -140,7 +142,6 @@ const getRedisUserkeys = function(address) {
     const prefix = `user:${address}`;
     return [
         `${prefix}:totalBet`,
-        `${prefix}:totalWon`,
         `${prefix}:betIds`,
     ];
 };
@@ -274,6 +275,7 @@ const seedTeams = async function() {
 // just cache it for now and then when it's done save the events gotten in the meantime
 let finishedSyncing = false;
 let pendingMatchUpdates = [];
+let pendingMatchCreates = [];
 let pendingBetPlaces = [];
 let pendingLastBetPlacedBlock = 0;
 let pendingBetCancels = [];
@@ -288,24 +290,43 @@ const matchEventHandler = async function(err, result) {
         broker.getFullMatchDetails(matchId)
         .then(matchData => {
             const match = broker.parseMatch(matchId, matchData);
-            pendingMatchUpdates.push(broker.parseMatch(matchId, matchData));
+            if (result.event == 'MatchCreated') {
+                pendingMatchCreates.push(match);
+            } else {
+                pendingMatchUpdates.push(match);
+            }
             if (finishedSyncing) {
+
+                postgres.matches.push(...pendingMatchCreates);
+                let extra = pendingMatchCreates;
+                pendingMatchCreates = [];
+                postgres.saveMatches().then(() => {
+                    extra.map(match => {
+                        seedRedisMatchKeysX(match.Id, match);
+                        autoUpdateMatchUntilEnd(match);
+                    });
+                    extra = [];
+                }).catch(() => {
+                    logger.log('postgres', 'error', 'Unable to save match creations, pushing to queue')
+                });
+
                 postgres.matches.push(...pendingMatchUpdates);
+                extra = pendingMatchUpdates;
                 pendingMatchUpdates = [];
                 postgres.saveMatches().then(() => {
-                    if (result.event == 'MatchCreated') {
-                        seedRedisMatchKeysX(matchId, match);     
-                        autoUpdateMatchUntilEnd(match);                 
-                    } else {
-                        // update timestamp so api can know to read new version
-                        updateMatchMetaTimestamp(matchId);
-                    }
-                }).catch(()=>{});
+                    extra.map(match => {
+                        updateMatchMetaTimestamp(match.Id);
+                    });
+                    extra = [];
+                }).catch(() => {
+                    logger.log('postgres', 'error', 'Unable to save match update, pushing to queue')
+                });
             } else {
                 logger.log('observer', 'info', 'Observer not finished syncing, delayed saving matches');
             }
         })
         .catch(err => {
+            console.log(err)
             logger.log('web3', 'error', 'Unable to handle match event', {
                 error: err
             });
@@ -319,7 +340,7 @@ const matchEventHandler = async function(err, result) {
 
 const seedMatches = async function(err, result) {
     logger.log('observer', 'info', 'Attempting to seed matches')
-    let numStr = "32";
+    let numStr = 0;
     try {
         numStr = await broker.getNumMatches();
     } catch(e) {
@@ -366,10 +387,6 @@ const seedMatches = async function(err, result) {
         throw err;
     }
     matches.map(autoUpdateMatchUntilEnd);
-}
-
-const parseFixture = function(raw) {
-    return JSON.parse(raw).fixture;
 }
 
 const updateMatchCache = async function(matchId) {
@@ -422,10 +439,7 @@ const updateMatchCache = async function(matchId) {
         })
         throw 'Unable to set redis match key - updateMatchCache';
     }
-    return {
-        Data: match,
-        Fixture: fixture,
-    };
+    return match;
 };
 
 const secondsToMilli = function(seconds) {
@@ -457,15 +471,14 @@ const cancelAllLaters = function() {
 // and in the redis cache including it's fixture
 // starting 15 or less minutes before a match
 const autoUpdateMatchUntilEnd = function(match) {
-    let startTime = ((match.StartTime * 1000) - minutes(15) - Date.now());
+    let startTime = ((match.StartTime * 1000) - minutes(10) - Date.now());
     if (startTime < 0) {
         startTime = 0;
     }
     const update = async function(match) {
         logger.log('observer', 'info', `Gonna update cache for match ${match.Id}`)
         try {
-            let updated = await updateMatchCache(match.Id);
-            match = updated.Data;
+            match = await updateMatchCache(match.Id);
         } catch (err)  {
             logger.log('observer', 'error', `Was not able to update match cache in autoupdater ${match.Id}`, {
                 error: err
@@ -507,7 +520,7 @@ const setPlacedBetRedisKeys = async function(bet, block, force = false) {
         });
         throw err;
     }
-    if (block <= parseInt(redisLastBetBlock) && !force) {
+    if (block < parseInt(redisLastBetBlock) && !force) {
         return;
     }
     const matchKeys = getRedisMatchKeys(bet.Match);
@@ -517,7 +530,7 @@ const setPlacedBetRedisKeys = async function(bet, block, force = false) {
         ['incr', REDIS_CONTRACT_NUM_BETS],
         ['incrbyfloat', REDIS_CONTRACT_TOTAL_BET, bet.Amount],
         ['incrbyfloat', userKeys[0], bet.Amount],
-        ['sadd', userKeys[2], `${bet.Match}:${bet.Id}`],
+        ['sadd', userKeys[1], `${bet.Match}:${bet.Id}`],
         ['set', matchKeys[8], Date.now()],
     ]);
 }
@@ -534,7 +547,7 @@ const setCancelledBetRedisKeys = async function(matchId, block, force = false) {
         });
         throw err;
     }
-    if (block <= parseInt(redisLastCancelBlock) && !force) {
+    if (block < parseInt(redisLastCancelBlock) && !force) {
         return;
     }
     const matchKeys = getRedisMatchKeys(matchId);
@@ -545,7 +558,7 @@ const setCancelledBetRedisKeys = async function(matchId, block, force = false) {
 }
 
 const setClaimedBetRedisKeys = async function(matchId, block, force = false) {
-    logger.log('observer', 'info', `Setting bet cancelled event redis keys`);
+    logger.log('observer', 'info', `Setting bet claimed event redis keys`);
     let redisLastClaimedBlock = brokerConfig.StartBlockHeight;
     try {
         redisLastClaimedBlock = await redis.getKey(REDIS_LAST_BET_CLAIMED_BLOCK);
@@ -556,7 +569,7 @@ const setClaimedBetRedisKeys = async function(matchId, block, force = false) {
         });
         throw err;
     }
-    if (block <= parseInt(redisLastClaimedBlock) && !force) {
+    if (block < parseInt(redisLastClaimedBlock) && !force) {
         return;
     }
     const matchKeys = getRedisMatchKeys(matchId);
@@ -716,7 +729,7 @@ const seedBets = async function() {
         claimEventLog = await broker.getBetClaimedEvents(lastClaimBlock);
     } catch(e) {
         console.log(e)
-        const err = `Error while trying to get past bet cancelled events`;
+        const err = `Error while trying to get past bet claimed events`;
         logger.log('web3', 'error', err, {
             error: e
         });
@@ -726,11 +739,12 @@ const seedBets = async function() {
     if (betEventLog.length > 0) {
         const betEventLogsLastBlock = betEventLog[betEventLog.length - 1].blockNumber;
         if ( betEventLogsLastBlock > lastBetBlock) {
-            const betsPlaced = betEventLog.map(event => broker.parseBetPlacedEvent(event));
+            betEventLog = betEventLog.filter(event => event.blockNumber > lastBetBlock);
+            let betsPlaced = betEventLog.map(event => broker.parseBetPlacedEvent(event));
             postgres.unpersistedBets.push(...betsPlaced);
             try { 
                 await postgres.saveBets();
-                betsPlaced.map(bet => setPlacedBetRedisKeys(bet, betEventLogsLastBlock, false)) ;
+                betsPlaced.map(bet => setPlacedBetRedisKeys(bet, bet.Block, false)) ;
             } catch (e) {
                 const err = 'Error occurred when attempting to seed bets placed bets';
                 logger.log('observer', 'error', err, {
@@ -744,14 +758,20 @@ const seedBets = async function() {
     if (cancelEventLog.length > 0) {
         const cancelEventLogsLastBlock = cancelEventLog[cancelEventLog.length - 1].blockNumber;
         if ( cancelEventLogsLastBlock > lastCancelBlock) {
-            const betsCancelled = cancelEventLog.map(event => [
-                parseInt(event.returnValues.matchId), 
-                parseInt(event.returnValues.betId)
-            ]);
+            cancelEventLog = cancelEventLog.filter(event => event.blockNumber > lastCancelBlock);
+            let blocks = [];
+            let betsCancelled = [];
+            cancelEventLog.map(event => {
+                betsCancelled.push([
+                    parseInt(event.returnValues.matchId),
+                    parseInt(event.returnValues.betId),
+                ]);
+                blocks.push(parseInt(event.blockNumber));
+            });
             postgres.cancelledBets.push(...betsCancelled);
             try { 
                 await postgres.saveBets();
-                betsCancelled.map(bet => setCancelledBetRedisKeys(bet[0], cancelEventLogsLastBlock));
+                betsCancelled.map((bet, idx) => setCancelledBetRedisKeys(bet[0], blocks[idx]));
             } catch (e) {
                 const err = 'Error occurred when attempting to seed cancelled bets';
                 logger.log('observer', 'error', err, {
@@ -764,15 +784,21 @@ const seedBets = async function() {
 
     if (claimEventLog.length > 0) {
         const claimEventLogsLastBlock = claimEventLog[claimEventLog.length - 1].blockNumber;
-        if ( claimEventLogsLastBlock > lastCancelBlock) {
-            const betsClaimed = claimEventLog.map(event => [
-                parseInt(event.returnValues.matchId), 
-                parseInt(event.returnValues.betId)
-            ]);
+        if ( claimEventLogsLastBlock > lastClaimBlock) {
+            claimEventLog = claimEventLog.filter(event => event.blockNumber > lastClaimBlock);
+            let blocks = [];
+            let betsClaimed = [];
+            claimEventLog.map(event => {
+                betsClaimed.push([
+                    parseInt(event.returnValues.matchId),
+                    parseInt(event.returnValues.betId)
+                ]);
+                blocks.push(parseInt(event.blockNumber));
+            });
             postgres.claimedBets.push(...betsClaimed);
             try { 
                 await postgres.saveBets();
-                betsClaimed.map(bet => setClaimedBetRedisKeys(bet[0], claimEventLogsLastBlock));
+                betsClaimed.map((bet, idx) => setClaimedBetRedisKeys(bet[0], blocks[idx]));
             } catch (e) {
                 const err = 'Error occurred when attempting to seed claimed bets';
                 logger.log('observer', 'error', err, {
@@ -806,10 +832,26 @@ const finishedSyncingHandler = async function() {
         finishedSyncing = true;
 
         // save match events we found but didn't sync
-        postgres.matches.push(...pendingMatchUpdates);
+        postgres.matches.push(...pendingMatchCreates);
+        let extra = pendingMatchCreates;
+        pendingMatchCreates = [];
         await postgres.saveMatches();
+        await Promise.all(extra.map(match => {
+            return Promise.all([
+                seedRedisMatchKeysX(match.Id, match),
+                autoUpdateMatchUntilEnd(match.Id)
+            ]);
+        }));
+        extra = [];
+        logger.log('observer', 'info', 'Saved pending match creates');
 
-        logger.log('observer', 'info', 'Saved pending match updated');
+        postgres.matches.push(...pendingMatchUpdates);
+        extra = pendingMatchUpdates;
+        pendingMatchUpdates = [];
+        await postgres.saveMatches();
+        await Promise.all(extra.map(match => updateMatchMetaTimestamp(match.Id)));
+        extra = [];
+        logger.log('observer', 'info', 'Saved pending match updates');
 
         // save bet place events
         postgres.unpersistedBets.push(...pendingBetPlaces)

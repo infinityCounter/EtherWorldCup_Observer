@@ -13,4 +13,4 @@ clean:
 	rm -rf bin/
 
 observer: 
-	pkg src/observer.js --targets=linux-x64 --out-path=./bin/
+	pkg src/observer.js --targets=linux-x64 --out-path=./bin/$(SHA)

@@ -9,9 +9,10 @@ let instance = 0;
 
 class RedisClient {
 
-    constructor(host, port) {
+    constructor(host, port, pass) {
         this.host = host;
         this.port = port;
+        this.pass = pass;
         this.instance = instance++;
         this.failedAttempts = 0;
         this.backoff = 0;
@@ -19,12 +20,14 @@ class RedisClient {
     }
 
     async setup() {
-        this.client = await this.getRedisClient(this.host, this.port);
+        this.client = await this.getRedisClient(this.host, this.port, this.pass);
     }
 
-    getRedisClient(host, port) {
+    getRedisClient(host, port, pass) {
         return new Promise((resolve, reject) => {
-            let client = redis.createClient(port, host);
+            let options = {};
+            if (pass != "") options.password = pass;
+            let client = redis.createClient(port, host, options);
             client.on('connect', () => {
                 this.backoff = 0;
                 this.failedAttempts = 0;

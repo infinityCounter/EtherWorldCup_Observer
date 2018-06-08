@@ -67,3 +67,5 @@ src/**/*.old
 config
 
 .source.sh
+
+bin/
