@@ -35,6 +35,7 @@ REDIS_KEY_DEFAULTS[REDIS_CONTRACT_NUM_BETS]        = 0;
 
 let postgres = new PgClient(postgresConfig[env]);
 let redis    = new RedisClient(redisConfig[env].host, redisConfig[env].port, redisConfig[env].pass);
+console.log(`Broker starting for contact at ${brokerConfig[env].ContractAddess} at BlockHeight ${brokerConfig[env].StartBlockHeight}`)
 let broker   = new Broker(brokerConfig[env].WSEndpoint,
     brokerConfig[env].HTTPEndpoint,
     brokerConfig[env].ABI,
