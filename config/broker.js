@@ -1,5 +1,5 @@
 module.exports = {
-    WSEndpoint: "wss://rinkeby.infura.io/ws",
+    WSEndpoint: "wss://rinkeby.infura.io/_ws",
     HTTPEndpoint: "https://rinkeby.infura.io/PwcyIGszs2x6sS6NIU1Q",
     ContractAddess: process.env.ContractAddress,
     StartBlockHeight: parseInt(process.env.StartBlockHeight),
@@ -25,11 +25,11 @@ module.exports = {
         "constant": false,
         "inputs": [
           {
-            "name": "myid",
+            "name": "_myid",
             "type": "bytes32"
           },
           {
-            "name": "result",
+            "name": "_result",
             "type": "string"
           }
         ],
@@ -69,8 +69,16 @@ module.exports = {
             "type": "string"
           },
           {
-            "name": "_fixtureId",
-            "type": "uint256"
+            "name": "_fixture",
+            "type": "string"
+          },
+          {
+            "name": "_secondary",
+            "type": "string"
+          },
+          {
+            "name": "_invert",
+            "type": "bool"
           },
           {
             "name": "_teamA",
@@ -115,132 +123,6 @@ module.exports = {
         "type": "function"
       },
       {
-        "constant": false,
-        "inputs": [
-          {
-            "name": "_matchId",
-            "type": "uint8"
-          }
-        ],
-        "name": "cancelMatch",
-        "outputs": [
-          {
-            "name": "",
-            "type": "bool"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "nonpayable",
-        "type": "function"
-      },
-      {
-        "constant": false,
-        "inputs": [
-          {
-            "name": "newMin",
-            "type": "uint256"
-          }
-        ],
-        "name": "changeMiniumBet",
-        "outputs": [],
-        "payable": false,
-        "stateMutability": "nonpayable",
-        "type": "function"
-      },
-      {
-        "constant": false,
-        "inputs": [
-          {
-            "name": "_matchId",
-            "type": "uint8"
-          },
-          {
-            "name": "_outcome",
-            "type": "uint8"
-          }
-        ],
-        "name": "placeBet",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
-          }
-        ],
-        "payable": true,
-        "stateMutability": "payable",
-        "type": "function"
-      },
-      {
-        "anonymous": false,
-        "inputs": [
-          {
-            "indexed": false,
-            "name": "matchId",
-            "type": "uint8"
-          },
-          {
-            "indexed": false,
-            "name": "result",
-            "type": "uint8"
-          }
-        ],
-        "name": "MatchOver",
-        "type": "event"
-      },
-      {
-        "anonymous": false,
-        "inputs": [
-          {
-            "indexed": false,
-            "name": "",
-            "type": "uint8"
-          }
-        ],
-        "name": "Option",
-        "type": "event"
-      },
-      {
-        "anonymous": false,
-        "inputs": [
-          {
-            "indexed": false,
-            "name": "matchId",
-            "type": "uint8"
-          },
-          {
-            "indexed": false,
-            "name": "betId",
-            "type": "uint256"
-          }
-        ],
-        "name": "BetCancelled",
-        "type": "event"
-      },
-      {
-        "anonymous": false,
-        "inputs": [
-          {
-            "indexed": false,
-            "name": "matchId",
-            "type": "uint8"
-          }
-        ],
-        "name": "MatchCancelled",
-        "type": "event"
-      },
-      {
-        "anonymous": false,
-        "inputs": [
-          {
-            "indexed": false,
-            "name": "matchId",
-            "type": "uint8"
-          }
-        ],
-        "name": "MatchCreated",
-        "type": "event"
-      },
-      {
         "anonymous": false,
         "inputs": [
           {
@@ -277,7 +159,7 @@ module.exports = {
         "inputs": [
           {
             "indexed": false,
-            "name": "matchId",
+            "name": "",
             "type": "uint8"
           }
         ],
@@ -294,12 +176,163 @@ module.exports = {
           },
           {
             "indexed": false,
-            "name": "numAttempts",
+            "name": "betId",
+            "type": "uint256"
+          }
+        ],
+        "name": "BetCancelled",
+        "type": "event"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          {
+            "indexed": false,
+            "name": "",
             "type": "uint8"
           }
         ],
-        "name": "MatchFailedAttemptedPayoutRelease",
+        "name": "MatchUpdated",
         "type": "event"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          {
+            "indexed": false,
+            "name": "",
+            "type": "uint8"
+          }
+        ],
+        "name": "MatchCreated",
+        "type": "event"
+      },
+      {
+        "anonymous": false,
+        "inputs": [
+          {
+            "indexed": false,
+            "name": "matchId",
+            "type": "uint8"
+          },
+          {
+            "indexed": false,
+            "name": "betId",
+            "type": "uint256"
+          }
+        ],
+        "name": "BetClaimed",
+        "type": "event"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          {
+            "name": "_matchId",
+            "type": "uint8"
+          }
+        ],
+        "name": "cancelMatch",
+        "outputs": [
+          {
+            "name": "",
+            "type": "bool"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          {
+            "name": "_newCommission",
+            "type": "uint8"
+          }
+        ],
+        "name": "changeFees",
+        "outputs": [],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          {
+            "name": "_newMin",
+            "type": "uint256"
+          }
+        ],
+        "name": "changeMiniumBet",
+        "outputs": [],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          {
+            "name": "_matchId",
+            "type": "uint8"
+          },
+          {
+            "name": "_betId",
+            "type": "uint8"
+          }
+        ],
+        "name": "claimBet",
+        "outputs": [],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          {
+            "name": "_matchId",
+            "type": "uint8"
+          },
+          {
+            "name": "_outcome",
+            "type": "uint8"
+          }
+        ],
+        "name": "placeBet",
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256"
+          }
+        ],
+        "payable": true,
+        "stateMutability": "payable",
+        "type": "function"
+      },
+      {
+        "constant": false,
+        "inputs": [
+          {
+            "name": "_price",
+            "type": "uint256"
+          },
+          {
+            "name": "_primaryLimit",
+            "type": "uint256"
+          },
+          {
+            "name": "_secondaryLimit",
+            "type": "uint256"
+          }
+        ],
+        "name": "setGasPriceAndLimit",
+        "outputs": [],
+        "payable": false,
+        "stateMutability": "nonpayable",
+        "type": "function"
       },
       {
         "constant": false,
@@ -344,60 +377,9 @@ module.exports = {
         "type": "function"
       },
       {
-        "constant": false,
-        "inputs": [],
-        "name": "withdrawCommissions",
-        "outputs": [],
-        "payable": false,
-        "stateMutability": "nonpayable",
-        "type": "function"
-      },
-      {
         "constant": true,
         "inputs": [],
-        "name": "BETTING_CLOSE_DELAY",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "CANCEL_FEE",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "COMMISSION_RATE",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "getBalance",
+        "name": "commission_rate",
         "outputs": [
           {
             "name": "",
@@ -437,20 +419,10 @@ module.exports = {
           {
             "name": "",
             "type": "bool"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "getCommissions",
-        "outputs": [
+          },
           {
             "name": "",
-            "type": "uint256"
+            "type": "bool"
           }
         ],
         "payable": false,
@@ -474,6 +446,14 @@ module.exports = {
           {
             "name": "",
             "type": "string"
+          },
+          {
+            "name": "",
+            "type": "string"
+          },
+          {
+            "name": "",
+            "type": "bool"
           },
           {
             "name": "",
@@ -546,49 +526,7 @@ module.exports = {
       {
         "constant": true,
         "inputs": [],
-        "name": "getMinimumBet",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
         "name": "getNumMatches",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint8"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "MATCH_ADD_TIME_REQUIREMENT",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "MATCH_ENDING_QUERY_DELAY",
         "outputs": [
           {
             "name": "",
@@ -616,25 +554,11 @@ module.exports = {
       {
         "constant": true,
         "inputs": [],
-        "name": "MINIMUM_BET",
+        "name": "minimum_bet",
         "outputs": [
           {
             "name": "",
             "type": "uint256"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "NUM_TEAMS",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint8"
           }
         ],
         "payable": false,
@@ -671,6 +595,34 @@ module.exports = {
       },
       {
         "constant": true,
+        "inputs": [],
+        "name": "primaryGasLimit",
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "constant": true,
+        "inputs": [],
+        "name": "secondaryGasLimit",
+        "outputs": [
+          {
+            "name": "",
+            "type": "uint256"
+          }
+        ],
+        "payable": false,
+        "stateMutability": "view",
+        "type": "function"
+      },
+      {
+        "constant": true,
         "inputs": [
           {
             "name": "",
@@ -682,20 +634,6 @@ module.exports = {
           {
             "name": "",
             "type": "string"
-          }
-        ],
-        "payable": false,
-        "stateMutability": "view",
-        "type": "function"
-      },
-      {
-        "constant": true,
-        "inputs": [],
-        "name": "WITHDRAW_BALANCE_TIMESTAMP",
-        "outputs": [
-          {
-            "name": "",
-            "type": "uint256"
           }
         ],
         "payable": false,

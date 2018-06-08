@@ -17,30 +17,33 @@ class Broker {
     }
 
     async setup() {
-        this.wsWeb3 = await this.setupWS();
+        await this.setupWS();
         this.httpWeb3 = new Web3(new Web3.providers.HttpProvider(this.httpEndpoint));
-        this.wsBettingHouse = new this.wsWeb3.eth.Contract(this.abi, this.contractAddress);
         this.httpBettingHouse = new this.httpWeb3.eth.Contract(this.abi, this.contractAddress);
         this.backoff = 0;
     }
 
     setupWS() {
         const handler = (resolve, reject) => {
-            let provider = new Web3.providers.WebsocketProvider(this.wsEndpoint);
+                let provider = new Web3.providers.WebsocketProvider(this.wsEndpoint);
+                if (typeof this.wsWeb3 == 'undefined' || this.wsWeb3 == null) {
+                    this.wsWeb3 = new Web3(provider);
+                } else {
+                    this.wsWeb3.setProvider(provider);
+                }    
                 provider.on('connect', (e) => {
+                    this.wsBettingHouse = new this.wsWeb3.eth.Contract(this.abi, this.contractAddress);
                     this.backoff = 0;
                     this.numRejections = 0;
                     logger.log('web3', 'info', "Connected to broker websocket successfully!", {
                         instance: this.instance
                     });
-                    resolve(new Web3(provider));
+                    resolve();
                 });
-                const errorHandler = async (e) => {
-                    this.wsWeb3 = null;
+                const errorHandler = async () => {
                     this.backoff = this.numRejections * 2000;
                     this.numRejections++;
-                    logger.log('web3', 'error', "Error has occured in Broker websocket provider, restarting provider!", {
-                        error: e,
+                    logger.log('web3', 'error', "Restarting ws provider after error!", {
                         instance: this.instance,
                         numRejections: this.numRejections
                     });
@@ -51,11 +54,28 @@ class Broker {
                     await this.reconnectHandler();
                 };
                 const boundHandler = errorHandler.bind(this);
-                provider.on('error', () => {this.removeListeners(); setTimeout(boundHandler, this.backoff)});
-                provider.on('end', () => {this.removeListeners(); setTimeout(boundHandler, this.backoff)});
+                provider.on('error', (e) => {
+                    this.disconnect(e);
+                    setTimeout(boundHandler, this.backoff);
+                });
+                provider.on('end', (e) => {
+                    this.disconnect(e);
+                    setTimeout(boundHandler, this.backoff);
+                });
         };
         const boundHandler = handler.bind(this);
         return new Promise(boundHandler);
+    }
+    
+    disconnect(e) {
+        logger.log('web3', 'error', "Error has occured in Broker websocket provider, disconnecting now!", {
+            error: e,
+            instance: this.instance
+        });
+        this.wsWeb3 = null;
+        this.wsBettingHouse = null;
+        this.httpWeb3 = null;
+        this.httpBettingHouse = null;
     }
 
     getBet(matchId, betId) {
@@ -102,19 +122,9 @@ class Broker {
         this.wsBettingHouse.events.MatchCreated(listener);
     }
 
-    addMatchCancelledEventListener(listener = function(error, result){}) {
-        this.matchCancelledEventListener = listener;
-        this.wsBettingHouse.events.MatchCancelled(listener);
-    }
-
-    addMatchOverEventListener(listener = function(error, result){}) {
-        this.matchOverEventListener = listener;
-        this.wsBettingHouse.events.MatchOver(listener);
-    }
-
-    addMatchFailedAttemptedPayoutReleaseEventListener(listener = function(err, result){}) {
-        this.matchFailedAttemptPayoutReleaseEventListener = listener;
-        this.wsBettingHouse.events.MatchFailedAttemptedPayoutRelease(listener);
+    addMatchUpdatedEventListener(listener = function(error, result){}) {
+        this.matchUpdatedEventListener = listener;
+        this.wsBettingHouse.events.MatchUpdated(listener);
     }
 
     addMatchFailedPayoutReleaseEventListener(listener = function(error, result){}) {
@@ -160,25 +170,42 @@ class Broker {
         });
     }
 
+    addBetClaimedEventListener(listener = function(error, result){}) {
+        this.betClaimedEventListener = listener;
+        this.wsBettingHouse.events.BetClaimed(listener);
+    }
+
+    getBetClaimedEvents(since = this.startBlock) {
+        let that = this;
+        return new Promise((resolve, request) => {
+            that.wsBettingHouse.getPastEvents('BetClaimed', {fromBlock: since, to: "latest"}, (err, result) => {
+                if (err != null) {
+                    reject(err);
+                    return;
+                } else {
+                    resolve(result);
+                }
+            });
+        });
+    }
+
     resetListeners() {
         this.addMatchCreatedEventListener(this.matchCreatedEventListener);
-        this.addMatchCancelledEventListener(this.matchCancelledEventListener);
-        this.addMatchFailedAttemptedPayoutReleaseEventListener(this.matchFailedAttemptPayoutReleaseEventListener);
+        this.addMatchUpdatedEventListener(this.matchUpdatedEventListener);
         this.addMatchFailedPayoutReleaseEventListener(this.matchFailedPayoutReleaseEvenetListener);
-        this.addMatchOverEventListener(this.matchOverEventListener);
         this.addBetPlacedEventListener(this.betPlacedEventListener);
         this.addBetCancelledEventListener(this.betCancelledEventListener);
+        this.addBetClaimedEventListener(this.betClaimedEventListener);
     }
 
     removeListeners() {
         const blank = function(){};
         this.wsBettingHouse.events.MatchCreated(blank);
-        this.wsBettingHouse.events.MatchCancelled(blank);
-        this.wsBettingHouse.events.MatchFailedAttemptedPayoutRelease(blank);
+        this.wsBettingHouse.events.MatchUpdated(blank);
         this.wsBettingHouse.events.MatchFailedPayoutRelease(blank);
-        this.wsBettingHouse.events.MatchOver(blank);
         this.wsBettingHouse.events.BetPlaced(blank);
         this.wsBettingHouse.events.BetCancelled(blank);
+        this.wsBettingHouse.events.BetClaimed(blank);
     }
 
     addReconnectHandler(handler = function(){}) {
@@ -194,29 +221,32 @@ class Broker {
             Id: matchId,
             Name: matchData[0][0],
             FixtureId: parseInt(matchData[0][1]),
-            HomeTeam: parseInt(matchData[0][2]),
-            AwayTeam: parseInt(matchData[0][3]),
-            Winner: parseInt(matchData[0][4]),
-            StartTime: parseInt(matchData[0][5]),
+            SecondaryFixtureId: parseInt(matchData[0][2]),
+            Inverted: matchData[0][3],
+            HomeTeam: parseInt(matchData[0][4]),
+            AwayTeam: parseInt(matchData[0][5]),
+            Winner: parseInt(matchData[0][6]),
+            StartTime: parseInt(matchData[0][7]),
             CloseTime: parseInt(matchData[1][0]),
             TotalTeamABets: this.weiToEth(matchData[1][1]),
             TotalTeamBBets: this.weiToEth(matchData[1][2]),
             TotalDrawBets: this.weiToEth(matchData[1][3]),
             NumBets: parseInt(matchData[1][4]),
-            Cancelled: matchData[0][6],
-            Locked: matchData[0][7],
+            Cancelled: matchData[0][8],
+            Locked: matchData[0][9],
             NumPayoutAttempts: parseInt(matchData[1][5]),
         };
     }
 
     parseBetPlacedEvent(betEvent) {
         return {
-            ContractId: parseInt(betEvent.returnValues.betId),
-            Address: betEvent.returnValues.better,
+            Id: parseInt(betEvent.returnValues.betId),
+            Address: betEvent.returnValues.better.toLowerCase(),
             Amount: this.weiToEth(betEvent.returnValues.amount),
             Decision: `${parseInt(betEvent.returnValues.outcome)}`,
             Match: parseInt(betEvent.returnValues.matchId),
             Cancelled: false,
+            Claimed: false,
         }
     }
 };

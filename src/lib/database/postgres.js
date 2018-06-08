@@ -14,6 +14,7 @@ class PgClient {
         this.matches            = [];
         this.unpersistedBets    = [];
         this.cancelledBets      = [];
+        this.claimedBets        = [];
         this.intervalId         = null;
     }
 
@@ -85,7 +86,18 @@ class PgClient {
             FixtureId: {
                 type: Sequelize.INTEGER,
                 allowNull: false,
-                field: 'external_id'
+                field: 'fixture_id'
+            },
+            SecondaryFixtureId: {
+                type: Sequelize.INTEGER,
+                allowNull: false,
+                field: 'secondary_fixture_id'
+            },
+            Inverted: {
+                type: Sequelize.BOOLEAN,
+                allowNull: false,
+                defaultValue: false,
+                field: 'inverted'
             },
             Name: {
                 type: Sequelize.STRING,
@@ -138,14 +150,8 @@ class PgClient {
         this.models.Bet = this.db.define('bets', {
             Id: {
                 type: Sequelize.INTEGER,
-                field: 'id',
-                primaryKey: true,
-                autoIncrement: true,
-            },
-            ContractId: {
-                type: Sequelize.INTEGER,
                 unique: 'composite',
-                field: 'contractId',
+                field: 'id',
                 primaryKey: false
             },
             Address: {
@@ -179,6 +185,11 @@ class PgClient {
                 type: Sequelize.BOOLEAN,
                 defaultValue: false,
                 field: 'cancelled'
+            },
+            Claimed: {
+                type: Sequelize.BOOLEAN,
+                defaultValue: false,
+                field: 'claimed'
             }
         }, {
             indexes: [
@@ -248,6 +259,15 @@ class PgClient {
         return `UPDATE bets SET cancelled = true WHERE (${params.join(" OR ")});`;
     }
 
+    bulkClaimBetsBuildQuery(bets) {
+        let params = [];
+        let counter = 1;
+        bets.map((bet, idx) => {
+            params.push(`("matchId"=$${counter++} AND id=$${counter++})`);
+        })
+        return `UPDATE bets SET claimed = true WHERE (${params.join(" OR ")});`;
+    }
+
     async saveBets() {
         logger.log('postgres', 'info', 'Attempting to save bets');
         await this.models.Bet.sequelize.transaction((t) => {
@@ -267,6 +287,19 @@ class PgClient {
                     this.db.query(
                         this.bulkCancelBetsBuildQuery(this.cancelledBets), { 
                             bind: [].concat(...this.cancelledBets), 
+                            type: Sequelize.QueryTypes.UPDATE,
+                            transaction: t
+                        }
+                    )
+                
+                );
+            }
+
+            if (this.claimedBets.length > 0) {
+                promiseArr.push(
+                    this.db.query(
+                        this.bulkClaimBetsBuildQuery(this.claimedBets), { 
+                            bind: [].concat(...this.claimedBets), 
                             type: Sequelize.QueryTypes.UPDATE,
                             transaction: t
                         }
