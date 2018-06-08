@@ -4,7 +4,7 @@ const shelljs      = require('shelljs');
 
 const winston      = require('winston');
 
-const isProductionEnv = (process.env.ENVIRONMENT == 'production');
+const isProductionEnv = (process.env.OBSERVER_ENV == 'production');
 
 let LOG_ROOT = process.env.OBSERVER_LOGS || "/var/log/ewc/observer";
 
@@ -52,7 +52,7 @@ actions.forEach(function(action) {
     });
 });
 
-if (process.env.ENVIRONMENT !== 'production') {
+if (process.env.OBSERVER_ENV !== 'production') {
     actions.forEach(function(action) {
         logger[action].add(new winston.transports.Console({
             format: winston.format.simple()
