@@ -430,13 +430,34 @@ const updateMatchCache = async function(matchId) {
     const homeTeamScore = (fixture.result.goalsHomeTeam != null) ? fixture.result.goalsHomeTeam : 0;
     const awayTeamScore = (fixture.result.goalsAwayTeam != null) ? fixture.result.goalsAwayTeam : 0;
     let keys = getRedisMatchKeys(matchId);
+    // [
+    //     `${prefix}:status`,
+    //     `${prefix}:score`,
+    //     `${prefix}:totalNumBets`,
+    //     `${prefix}:totalTeamA`,
+    //     `${prefix}:totalTeamB`,
+    //     `${prefix}:totalDraw`,
+    //     `${prefix}:numPayoutAttempts`,
+    //     `${prefix}:lastMatchMetaUpdate`,
+    //     `${prefix}:lastMatchBetUpdate`
+    // ];
+    // TotalTeamABets: this.weiToEth(matchData[1][1]),
+    //         TotalTeamBBets: this.weiToEth(matchData[1][2]),
+    //         TotalDrawBets: this.weiToEth(matchData[1][3]),
+            // NumBets: parseInt(matchData[1][4]),
+    let actions = [
+        ['set',  keys[0], fixture.status],
+        ['set',  keys[1], `${homeTeamScore}-${awayTeamScore}`],
+        ['set',  keys[2], match.NumBets],
+        ['set',  keys[3], match.TotalTeamABets],
+        ['set',  keys[4], match.TotalTeamBBets],
+        ['set',  keys[5], match.TotalDrawBets],
+        ['set',  keys[6], match.NumPayoutAttempts],
+        ['set',  keys[7], Date.now()],
+    ];
     try {
-        const timestamp = Date.now();
-        await redis.transaction([
-            ['set', keys[0], fixture.status],
-            ['set', keys[1], `${homeTeamScore}-${awayTeamScore}`],
-            ['set', keys[7], timestamp]
-        ]);
+        // HERE MY NIGGA
+        await redis.transaction(actions);
     } catch (err) {
         logger.log('redis', 'error', 'Unable to set redis match key - updateMatchCache', {
             error: err
@@ -593,9 +614,9 @@ const betPlacedEventHandler = async function(err, result) {
         if (finishedSyncing) {
             postgres.unpersistedBets.push(...pendingBetPlaces);
             pendingBetPlaces = [];
+            scheduleMatchUpdate(bet.Match, seconds(3));
             postgres.saveBets()
             .then(() => { return setPlacedBetRedisKeys(bet, eventBlock, false) })
-            .then(() => scheduleMatchUpdate(bet.Match, seconds(3)))
             .catch((err) => {
                 logger.log('observer', 'error', 'Error occurred when attempting to save bets in bet placed event handler', {
                     error: err
@@ -621,9 +642,9 @@ const betCancelledEventHandler = async function(err, result) {
         if (finishedSyncing) {
             postgres.cancelledBets.push(...pendingBetCancels);
             pendingBetCancels = [];
+            scheduleMatchUpdate(bet[0], seconds(5))
             postgres.saveBets()
             .then(() => { return setCancelledBetRedisKeys(bet[0], eventBlock) })
-            .then(() => scheduleMatchUpdate(bet[0], seconds(5)))
             .catch((err) => {
                 logger.log('observer', 'error', 'Error occurred when attempting to save bets in bet cancelled event handler', {
                     error: err
@@ -650,9 +671,9 @@ const betClaimedEventHandler = async function(err, result) {
         if (finishedSyncing) {
             postgres.claimedBets.push(...pendingBetClaims);
             pendingBetClaims = [];
+            scheduleMatchUpdate(bet[0], seconds(5));
             postgres.saveBets()
             .then(() => { return setClaimedBetRedisKeys(bet[0], eventBlock) })
-            .then(() => scheduleMatchUpdate(bet[0], seconds(5)))
             .catch((err) => {
                 logger.log('observer', 'error', 'Error occurred when attempting to save bets in bet claimed event handler', {
                     error: err
