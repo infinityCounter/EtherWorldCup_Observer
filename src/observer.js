@@ -291,7 +291,7 @@ let pendingLastBetClaimedBlock = 0;
 const matchEventHandler = async function(err, result) {
     if (err == null) {
         logger.log('web3', 'info', `Attemptng to handle match event ${result.event} in block ${result.blockNumber}`)
-        const matchId = parseInt(result.returnValues[0]);
+        const matchId = parseInt(result.returnValues['0']);
         broker.getFullMatchDetails(matchId)
         .then(matchData => {
             const match = broker.parseMatch(matchId, matchData);
@@ -322,6 +322,7 @@ const matchEventHandler = async function(err, result) {
                         updateMatchMetaTimestamp(match.Id);
                     });
                     extra2 = [];
+                    scheduleMatchUpdate(match.Id, seconds(5));
                 }).catch(() => {
                     logger.log('postgres', 'error', 'Unable to save match update, pushing to queue')
                 });
@@ -509,10 +510,10 @@ const autoUpdateMatchUntilEnd = function(match) {
                 error: err
             });
         }
-        // If it has not been 3 hours and 12 minutes since the match started
+        // If it has not been 4 hours since the match started
         // or the match is not cancelled
         // or the winner is not set
-        if (Date.now() < ((match.StartTime*1000) + hours(3.2)) && !match.Cancelled && match.Winner == 0) {
+        if (Date.now() < ((match.StartTime*1000) + hours(4)) && !match.Cancelled && match.Winner == 0) {
             doLater(() => update(match), minutes(5));
         }
     }
