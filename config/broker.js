@@ -1,7 +1,7 @@
 module.exports = {
   "development": {
     WSEndpoint: "wss://rinkeby.infura.io/_ws",
-    HTTPEndpoint: "https://rinkeby.infura.io/PwcyIGszs2x6sS6NIU1Q",
+    HTTPEndpoint: "https://rinkeby.infura.io/",
     ContractAddess: process.env.ContractAddress,
     StartBlockHeight: parseInt(process.env.StartBlockHeight),
     ABI: [
